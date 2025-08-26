@@ -81,13 +81,13 @@ if __name__ == "__main__":
     # --- 여기를 수정하세요 ---
 
     # 1. 원본 .ply 파일 경로
-    input_file = os.path.abspath(os.path.join(base_dir, "..", "out", "meshes", "spray_gaussian.ply"))
+    input_file = os.path.abspath(os.path.join(base_dir, "..", "out", "transfer", "spray_gaussian_6.ply"))
 
     # 2. 결과물을 저장할 .ply 파일 경로
-    output_file = os.path.abspath(os.path.join(base_dir, "..", "out", "shifted_meshes", "shifted_spray_gaussian.ply"))
+    output_file = os.path.abspath(os.path.join(base_dir, "..", "out", "shifted_meshes", "shifted_spray_gaussian_6.ply"))
 
     # 3. 이동시킬 기준 좌표 (오프셋 벡터)
-    offset_vector = (0.625456, 1.559497, 1.578657)
+    offset_vector = (0.639987, 1.448243, 1.526706)
 
     # -------------------------
 

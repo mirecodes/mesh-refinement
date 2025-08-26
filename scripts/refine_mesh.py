@@ -13,13 +13,14 @@ class SystemConfig:
     # 1. User Define Configurations
     # --------------------------------------------------------------------------
     # mesh data directory: input / output
-    mesh_in_path: str = "data/meshes/bonsai_pot.ply"
-    mesh_out_path: str = "out/meshes/refined_bonsai_pot.ply"
-    mesh_dev_path: str = "out/meshes/processed_bonsai_pot.ply"
+    mesh_in_path: str = "data/meshes/spray.ply"
+    mesh_out_path: str = "out/meshes/refined_spray.ply"
+    mesh_dev_path: str = "out/meshes/processed_spray.ply"
 
     # function toggle flags
     automatic_alignment: bool = True  # True: 시작 시 PCA로 바닥면을 자동 정렬
-    step_by_step_visualization: bool = True  # True: 각 단계별로 결과물을 시각화
+    step_by_step_visualization: bool = False  # True: 각 단계별로 결과물을 시각화
+    apply_inverse_transform: bool = False
 
     # --------------------------------------------------------------------------
     # 2. Automatically Generated Configurations
@@ -107,7 +108,7 @@ def run_refinement_pipeline(ms, sys_cfg, params_cfg):
 
     # step: clean mesh by removing isolated fragments
     ms.meshing_remove_connected_component_by_diameter(mincomponentdiag=pymeshlab.PercentageValue(20.0))
-    show_mesh(ms, title="remove isolated fragments", enabled=True, highlight_boundary_loops=True)
+    show_mesh(ms, title="remove isolated fragments", enabled=sys_cfg.step_by_step_visualization, highlight_boundary_loops=True)
     # show_mesh_with_cutting_plane(ms, title="remove isolated fragmented", cut_z_value=0, enabled=True, highlight_boundary_loops=True)
 
     # --------------------------------------------------------------------------
@@ -122,7 +123,7 @@ def run_refinement_pipeline(ms, sys_cfg, params_cfg):
 
     # step: apply forward transformation
     apply_transform_from_matrix(ms, forward_transform)
-    show_mesh_with_cutting_plane(ms, title="transform z-up", cut_z_value=0, enabled=True, highlight_boundary_loops=True)
+    show_mesh_with_cutting_plane(ms, title="transform z-up", cut_z_value=0, enabled=sys_cfg.step_by_step_visualization, highlight_boundary_loops=True)
 
     # --------------------------------------------------------------------------
     # Surface reconstruction
@@ -130,17 +131,17 @@ def run_refinement_pipeline(ms, sys_cfg, params_cfg):
 
     # step: Screened Poisson surface reconstruction
     ms.generate_surface_reconstruction_screened_poisson(**params_cfg.screened_poisson_params)
-    show_mesh(ms, title="Poisson surface reconstruction", enabled=True, highlight_boundary_loops=True)
+    show_mesh(ms, title="Poisson surface reconstruction", enabled=sys_cfg.step_by_step_visualization, highlight_boundary_loops=True)
 
     # step: cut the vertices below the bottom plane
     ms.compute_selection_by_condition_per_vertex(**params_cfg.cutoff_params)
     if ms.current_mesh().selected_vertex_number() > 0:
         ms.meshing_remove_selected_vertices()
-    show_mesh_with_cutting_plane(ms, title="transform z-up", cut_z_value=0, enabled=True, highlight_boundary_loops=True)
+    show_mesh_with_cutting_plane(ms, title="transform z-up", cut_z_value=0, enabled=sys_cfg.step_by_step_visualization, highlight_boundary_loops=True)
 
     # step: mesh simplification
     ms.meshing_decimation_quadric_edge_collapse(**params_cfg.edge_collapse_params)
-    show_mesh(ms, title="Mesh simplication", enabled=True, highlight_boundary_loops=True)
+    show_mesh(ms, title="Mesh simplication", enabled=sys_cfg.step_by_step_visualization, highlight_boundary_loops=True)
 
     # step: remeshing
     ms.meshing_isotropic_explicit_remeshing(**params_cfg.remshing_params)
@@ -179,7 +180,8 @@ def run_refinement_pipeline(ms, sys_cfg, params_cfg):
     # --------------------------------------------------------------------------
 
     print("\n[단계 11] 최종 메쉬를 원래 좌표계로 복원합니다...")
-    apply_inv_transform_from_matrix(ms, forward_transform)
+    if sys_cfg.apply_inverse_transform:
+        apply_inv_transform_from_matrix(ms, forward_transform)
     show_mesh(ms, title="After automated mesh refinement", enabled=sys_cfg.step_by_step_visualization)
 
     # Load new mesh

@@ -1,0 +1,9 @@
+ply
+format binary_little_endian 1.0
+comment https://github.com/mikedh/trimesh
+element vertex 10
+property float x
+property float y
+property float z
+end_header
+½Àå¾´7·?’Ø?=§Ù¾,N·?IÿÛ?ßÀâ¾J3·?vÏ?¼ÂÜ¾šß·?nØ?öå¾Ñİ¶?›Ğ?Éõ¾&b·?±íÙ?)Zí¾%â¶?“ĞÑ?e€Ö¾â·?,·Ø?ªõÛ¾AÁ·?´+Õ?ƒdŞ¾™8·?Ó·Ô?
