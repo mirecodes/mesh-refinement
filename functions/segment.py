@@ -6,6 +6,63 @@ import trimesh
 import vedo
 from json_handler import JsonHandler
 
+from functions.estimate import learn_separator_main
+
+# --- optional: non-linear SVM isosurface visualization ---
+try:
+    from skimage.measure import marching_cubes
+except Exception as _e:
+    marching_cubes = None
+
+def show_svm_isosurface(clf, scaler, verts, faces, title="SVM surface", grid=64, bbox=None):
+    """
+    Visualize f(x)=0 of an SVM (typically RBF) as an isosurface using marching cubes.
+    - clf: trained sklearn SVM with decision_function
+    - scaler: StandardScaler used during training
+    - verts, faces: original mesh for context (vedo Mesh)
+    - grid: resolution per axis (64~128 recommended)
+    - bbox: optional (min, max) tuple to restrict volume; if None uses verts bbox
+    """
+    if marching_cubes is None:
+        print("[warn] scikit-image not available; cannot render isosurface. pip install scikit-image")
+        return
+
+    import numpy as np
+    import vedo
+
+    # 1) bounding box
+    if bbox is None:
+        bb_min = verts.min(axis=0)
+        bb_max = verts.max(axis=0)
+    else:
+        bb_min, bb_max = bbox
+    xs = np.linspace(bb_min[0], bb_max[0], grid)
+    ys = np.linspace(bb_min[1], bb_max[1], grid)
+    zs = np.linspace(bb_min[2], bb_max[2], grid)
+    XX, YY, ZZ = np.meshgrid(xs, ys, zs, indexing="ij")
+
+    # 2) decision function on grid (batched)
+    coords = np.column_stack([XX.ravel(), YY.ravel(), ZZ.ravel()])
+    coords_s = scaler.transform(coords)
+    F = np.empty(coords_s.shape[0], dtype=np.float32)
+    bs = 200000
+    for s in range(0, len(coords_s), bs):
+        F[s:s+bs] = clf.decision_function(coords_s[s:s+bs])
+    F = F.reshape(grid, grid, grid)
+
+    # 3) extract isosurface f(x)=0
+    dx, dy, dz = xs[1]-xs[0], ys[1]-ys[0], zs[1]-zs[0]
+    v, f, n, val = marching_cubes(F, level=0.0, spacing=(dx, dy, dz))
+    # shift to world coords
+    v[:, 0] += bb_min[0]
+    v[:, 1] += bb_min[1]
+    v[:, 2] += bb_min[2]
+
+    # 4) render
+    mesh_actor  = vedo.Mesh([verts, faces]).c("white").alpha(0.25)
+    surf_actor  = vedo.Mesh([v, f]).c("yellow").alpha(0.6)
+    vedo.show([mesh_actor, surf_actor], title, axes=1, interactive=True)
+
 def recolor_parts(vmeshes, belongings, mode, rand_colors):
     if mode == 0:
         for i, vmesh in enumerate(vmeshes):
@@ -23,7 +80,7 @@ def on_left_click(event, vmeshes, belongings, prevs, shared, rand_colors, plt):
     if vmesh is None or mode == 0:
         return
     if vmesh in vmeshes[1:]:
-        idx = vmesh.part_idx
+        idx = vmesh.idx_part
         prevs[idx] = belongings[idx]
         belongings[idx] = mode
         recolor_parts(vmeshes, belongings, mode, rand_colors)
@@ -35,7 +92,7 @@ def on_right_click(event, vmeshes, belongings, prevs, shared, rand_colors, plt):
     if vmesh is None or mode == 0:
         return
     if vmesh in vmeshes[1:]:
-        idx = vmesh.part_idx
+        idx = vmesh.idx_part
         belongings[idx] = prevs[idx]
         recolor_parts(vmeshes, belongings, mode, rand_colors)
         plt.render()
@@ -55,7 +112,7 @@ def on_tab(event, vmeshes, belongings, prevs, shared, categories_num, rand_color
 def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     # TODO: Remove temporal attributes
     categories_num = 2
-    categories = [[] for _ in range(categories_num)]
+    categories = [[] for _ in range(categories_num+1)]
 
     # Read json states
     states = JsonHandler(cfgs.json_states_dir)
@@ -85,7 +142,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
         vmesh = vedo.Mesh([tri.vertices, tri.faces])
         rand_color = np.random.rand(3)
         vmesh.c(rand_color).alpha(0.5)
-        vmesh.part_idx = i
+        vmesh.idx_part = i
         vmeshes.append(vmesh)
         rand_colors.append(rand_color)
 
@@ -122,5 +179,75 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     plt.show(vmeshes, interactive=True)
 
     # after the selection has ended
-    for i, vmesh in enumerate(vmeshes, start=1):
-        categories[i-1].append(vmesh)
+    for i in range(1, len(belongings)):
+        categories[belongings[i]].append(parts[i-1])
+
+    # svm training
+    # TODO: remove index of part selection
+    idx_selected_parts = [1, 2]
+    svm_results = {}
+
+    bb_min = verts.min(axis=0)
+    bb_max = verts.max(axis=0)
+    plane_size = float(np.linalg.norm(bb_max - bb_min))
+
+    for idx_part in idx_selected_parts:
+        try:
+            out = learn_separator_main(
+                ms,
+                categories,
+                idx_part,
+                max_hops=10,
+                method='polyhedral',
+                C=1.0,
+                gamma='scale',
+                use_signed_dist=True,
+                sdf_thresh=0.0,
+                balance='None'
+            )
+            svm_results[idx_part] = out
+
+            plane = out.get('plane', None)
+            if plane is not None:
+                n, d = plane
+                center = -d * n
+                print(n, d)
+
+                mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.25)
+                part_actors = list()
+                for part in categories[idx_part]:
+                    part_actors.append(vedo.Mesh([part.vertices, part.faces]).c("red").alpha(0.75))
+                # part_actor = vedo.Mesh([parts[idx_part].vertices, parts[idx_part].faces]).c("red").alpha(0.8)
+                # Fallback for older/newer API variants: create unit plane then scale it about center
+                plane_actor = vedo.Plane(pos=center, normal=n).c("yellow").alpha(0.5)
+                plane_actor.scale([plane_size, plane_size, 1.0], origin=center)
+
+                vedo.show(
+                    [mesh_actor, part_actors, plane_actor],
+                    f"SVM plane for part #{idx_part}",
+                    axes=1,
+                    interactive=True
+                )
+            else:
+                print(f"[info]: part #{idx_part}: non-linear SVM → rendering isosurface (f(x)=0)")
+                # Optional: restrict bbox to selected category parts for speed
+                if len(categories[idx_part]) > 0:
+                    pmins = []
+                    pmaxs = []
+                    for pm in categories[idx_part]:
+                        pmins.append(pm.vertices.min(axis=0))
+                        pmaxs.append(pm.vertices.max(axis=0))
+                    bb_min_local = np.min(np.vstack(pmins), axis=0)
+                    bb_max_local = np.max(np.vstack(pmaxs), axis=0)
+                    # small padding
+                    pad = 0.02 * np.linalg.norm(bb_max_local - bb_min_local)
+                    bb_min_local -= pad
+                    bb_max_local += pad
+                    bbox = (bb_min_local, bb_max_local)
+                else:
+                    bbox = None
+                show_svm_isosurface(out["clf"], out["scaler"], verts, faces,
+                                    title=f"SVM surface for part #{idx_part}", grid=64, bbox=bbox)
+
+        except Exception as e:
+            print(f"[error]: part #{idx_part}: {e}")

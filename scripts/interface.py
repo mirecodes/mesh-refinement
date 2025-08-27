@@ -18,9 +18,9 @@ class SystemConfigs():
     json_config_path = "configs.json"
 
     # Operational controller
-    enable_stage_align: bool = True
-    enable_stage_refine: bool = True
-    enable_stage_decompose: bool = True
+    enable_stage_align: bool = False
+    enable_stage_refine: bool = False
+    enable_stage_decompose: bool = False
     enable_stage_segment: bool = True
 
     # --------------------------------------------------------------------------
