@@ -24,10 +24,28 @@ def post_mesh_repair(func):
         return result_ms
     return wrapper
 
+
 def repair_mesh(ms: pymeshlab.MeshSet):
     ms.meshing_repair_non_manifold_edges()
     ms.meshing_merge_close_vertices()
     return ms
+
+
+def replace_mesh_0(ms: pymeshlab.MeshSet, new_mesh: pymeshlab.Mesh) -> pymeshlab.MeshSet:
+    out = pymeshlab.MeshSet()
+    out.add_mesh(mesh=new_mesh)
+
+    for i in range(1, len(ms.mesh_number())):
+        out.add_mesh(ms.mesh(i))
+    return out
+
+def replace_mesh_0_points(ms: pymeshlab.MeshSet, verts_matrix, faces_matrix) -> pymeshlab.MeshSet:
+    out = pymeshlab.MeshSet()
+    out.add_mesh(pymeshlab.Mesh(vertex_matrix=verts_matrix, face_matrix=faces_matrix))
+
+    for i in range(1, ms.mesh_number()):
+        out.add_mesh(ms.mesh(i))
+    return out
 
 
 def find_boundary_loops(t_mesh, verbose=False) -> list:
@@ -127,11 +145,11 @@ def calculate_transforms(ms, verbose=False) -> (np.array, np.array):
     # calculate the forward / inverse se(3) transformation
     forward_transform = translation_matrix @ rotation_4x4
 
-    if verbose: print(f"[info] The forward / inverse transformation matrix have found.")
+    if verbose: print(f"[info] The transformation matrix have found.")
     return forward_transform
 
 
-def apply_transform_from_matrix(ms, matrix_4x4, verbose=False):
+def apply_transform_from_matrix(ms: pymeshlab.MeshSet, matrix_4x4, verbose=False):
     '''
     Apply the transformation matrix ms to the mesh
     :param ms: mesh_set
@@ -141,55 +159,27 @@ def apply_transform_from_matrix(ms, matrix_4x4, verbose=False):
     '''
     if verbose: print("[info] Function 'apply_transform_from_matrix' called")
     rotation_matrix = matrix_4x4[:3, :3]
-    translation_vector = [0, 0, 0]
     translation_vector = matrix_4x4[:3, 3]
 
     rot = R.from_matrix(rotation_matrix)
     euler_angles = rot.as_euler('xyz', degrees=True)
 
-    ms.compute_matrix_from_translation_rotation_scale(
-        rotationx=euler_angles[0],
-        rotationy=euler_angles[1],
-        rotationz=euler_angles[2],
-        translationx=translation_vector[0],
-        translationy=translation_vector[1],
-        translationz=translation_vector[2],
-        freeze=True
-    )
-    if verbose: print("[info] The mesh transformation has applied")
-
-
-def apply_inv_transform_from_matrix(ms, matrix_4x4, verbose=False):
-    '''
-    Apply the transformation matrix ms to the mesh
-    :param ms: mesh_set
-    :param matrix_4x4: transformation matrix
-    :param verbose: bool
-    :return: None
-    '''
-    if verbose: print("[info] Function 'apply_transform_from_matrix' called")
-    rotation_matrix = matrix_4x4[:3, :3].T
-    translation_vector = [0, 0, 0]
-    translation_vector = -matrix_4x4[:3, 3]
-
-    rot = R.from_matrix(rotation_matrix)
-    euler_angles = rot.as_euler('xyz', degrees=True)
-
-    ms.compute_matrix_from_translation_rotation_scale(
-        translationx=translation_vector[0],
-        translationy=translation_vector[1],
-        translationz=translation_vector[2],
-        freeze=True
-    )
-
-    ms.compute_matrix_from_translation_rotation_scale(
-        rotationx=euler_angles[0],
-        rotationy=euler_angles[1],
-        rotationz=euler_angles[2],
-        freeze=True
-    )
+    for idx in range(ms.mesh_number()):
+        ms.set_current_mesh(idx)
+        ms.compute_matrix_from_translation_rotation_scale( # rotation -> translation
+            rotationx=euler_angles[0],
+            rotationy=euler_angles[1],
+            rotationz=euler_angles[2],
+            translationx=translation_vector[0],
+            translationy=translation_vector[1],
+            translationz=translation_vector[2],
+            compose=True,
+            freeze=True
+        )
 
     if verbose: print("[info] The mesh transformation has applied")
+
+    ms.set_current_mesh(0)
 
 def flatten_bottom_hole(ms: pymeshlab.MeshSet, target_z: float = 0.0, verbose=False) -> pymeshlab.MeshSet:
     '''
@@ -221,10 +211,8 @@ def flatten_bottom_hole(ms: pymeshlab.MeshSet, target_z: float = 0.0, verbose=Fa
     if verbose: print(f"[info] Moved the boundary loop vertices onto z={target_z}.")
 
     # put the mesh format back to the meshlab mesh
-    new_ms = pymeshlab.MeshSet()
-    new_ms.add_mesh(pymeshlab.Mesh(vertex_matrix=t_mesh.vertices, face_matrix=t_mesh.faces))
-
-    return new_ms
+    out = replace_mesh_0_points(ms, t_mesh.vertices, t_mesh.faces)
+    return out
 
 
 def fill_bottom_hole(ms: pymeshlab.MeshSet, verbose=False) -> pymeshlab.MeshSet:
@@ -280,6 +268,5 @@ def fill_bottom_hole(ms: pymeshlab.MeshSet, verbose=False) -> pymeshlab.MeshSet:
     if verbose: print(f"[info] Fill the bottom holes by adding {len(new_faces)} faces.")
 
     # put the mesh format back to the meshlab mesh
-    new_ms = pymeshlab.MeshSet()
-    new_ms.add_mesh(pymeshlab.Mesh(vertex_matrix=t_mesh.vertices, face_matrix=t_mesh.faces))
-    return new_ms
+    out = replace_mesh_0_points(ms, t_mesh.vertices, t_mesh.faces)
+    return out

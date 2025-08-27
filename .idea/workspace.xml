@@ -4,37 +4,36 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a0541cb5-4b30-49cd-b815-1ea47130df28" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/data/gaussians/bonsai_pot_gaussian.ply" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/data/refined/bonsai_pot.ply" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/data/refined/bonsai_pot_gaussian.ply" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/data/refined/refined_bonsai_pot.ply" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/data/refined/refined_spray.ply" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/data/refined/spray.ply" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/out/merged_meshes/refined_spray_merged_1.ply" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/out/merged_meshes/refined_spray_merged_6.ply" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/configs.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/convex_decompose.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/dev/JsonDataModule.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/dev/dev.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/dev/json_scribber.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/dev/naive_interface.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/interface.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/map_gaussians.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/merge_meshes.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/select_parts.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/work/spray/attributes/configs.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/work/spray/attributes/states.json" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/work/spray/meshes/refined_mesh.ply" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/.gitignore" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/MeshRefinement.iml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/modules.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/out/meshes/refined_bonsai_pot.ply" beforeDir="false" afterPath="$PROJECT_DIR$/out/meshes/refined_bonsai_pot.ply" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/out/meshes/refined_spray.ply" beforeDir="false" afterPath="$PROJECT_DIR$/out/meshes/refined_spray.ply" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/out/shifted_meshes.zip" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/refine_mesh.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/refine_mesh.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/shift_points.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/shift_points.py" afterDir="false" />
+    <list default="true" id="a0541cb5-4b30-49cd-b815-1ea47130df28" name="Changes" comment="feat: implement naive gui">
+      <change afterPath="$PROJECT_DIR$/data/bonsai_pot/gaussian.ply" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/data/bonsai_pot/mesh.ply" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/data/spray/gaussian.ply" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/data/spray/mesh.ply" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/functions/decompose.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/functions/refine.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/functions/segment.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/functions/transform.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/scripts/dev.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/functions/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/functions/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/functions/utilities.py" beforeDir="false" afterPath="$PROJECT_DIR$/functions/utilities.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/configs.json" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/configs.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/convex_decompose.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/legacy/convex_decompose.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/interface.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/interface.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/map_gaussians.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/legacy/map_gaussians.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/merge_meshes.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/legacy/merge_meshes.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/refine_heritage.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/legacy/refine_heritage.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/refine_mesh.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/legacy/refine_mesh.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/select_parts.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/legacy/select_parts.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/attributes/configs.json" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/attributes/configs.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/attributes/states.json" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/attributes/states.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_mesh_1.ply" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_mesh_2.ply" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_mesh_3.ply" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_mesh_4.ply" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_mesh_5.ply" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_mesh_6.ply" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/refined_mesh.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/refined_mesh.ply" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -46,6 +45,17 @@
       <list>
         <option value="Python Script" />
       </list>
+    </option>
+  </component>
+  <component name="FlaskConsoleOptions" custom-start-script="import sys; print('Python %s on %s' % (sys.version, sys.platform)); sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;from flask.cli import ScriptInfo, NoAppException&#10;for module in [&quot;main.py&quot;, &quot;wsgi.py&quot;, &quot;app.py&quot;]:&#10;    try: locals().update(ScriptInfo(app_import_path=module, create_app=None).load_app().make_shell_context()); print(&quot;\nFlask App: %s&quot; % app.import_name); break&#10;    except NoAppException: pass">
+    <envs>
+      <env key="FLASK_APP" value="app" />
+    </envs>
+    <option name="myCustomStartScript" value="import sys; print('Python %s on %s' % (sys.version, sys.platform)); sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;from flask.cli import ScriptInfo, NoAppException&#10;for module in [&quot;main.py&quot;, &quot;wsgi.py&quot;, &quot;app.py&quot;]:&#10;    try: locals().update(ScriptInfo(app_import_path=module, create_app=None).load_app().make_shell_context()); print(&quot;\nFlask App: %s&quot; % app.import_name); break&#10;    except NoAppException: pass" />
+    <option name="myEnvs">
+      <map>
+        <entry key="FLASK_APP" value="app" />
+      </map>
     </option>
   </component>
   <component name="Git.Settings">
@@ -82,10 +92,11 @@
     "Python.refine_mesh.executor": "Run",
     "Python.select_parts.executor": "Run",
     "Python.shift_points.executor": "Run",
+    "Python.transform.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "git-widget-placeholder": "main",
-    "last_opened_file_path": "/Users/mireflare/Documents/Codes/mesh-refinement/scripts",
+    "last_opened_file_path": "/Users/mireflare/Documents/Codes/mesh-refinement/data/bonsai_pot",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -97,17 +108,44 @@
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/data/bonsai_pot" />
+      <recent name="$PROJECT_DIR$/data/spray" />
       <recent name="$PROJECT_DIR$/scripts" />
       <recent name="$PROJECT_DIR$/scripts/dev" />
       <recent name="$PROJECT_DIR$/work/spray/meshes" />
-      <recent name="$PROJECT_DIR$/data/refined" />
-      <recent name="$PROJECT_DIR$/out" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/scripts/legacy" />
       <recent name="$PROJECT_DIR$/scripts/dev" />
       <recent name="$PROJECT_DIR$/scripts/select_part_example.py" />
       <recent name="$PROJECT_DIR$/out" />
     </key>
+  </component>
+  <component name="RunManager">
+    <configuration name="interface" type="PythonConfigurationType" factoryName="Python">
+      <module name="mesh-refinement" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="SDK_NAME" value="Python 3.12 (mesh-refinement)" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/scripts" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="SCRIPT_NAME" value="interface.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
@@ -132,22 +170,52 @@
       <workItem from="1755592612798" duration="571000" />
       <workItem from="1755597617563" duration="4774000" />
       <workItem from="1756100572741" duration="6523000" />
-      <workItem from="1756114212163" duration="6559000" />
+      <workItem from="1756114212163" duration="43415000" />
     </task>
+    <task id="LOCAL-00001" summary="feat: implement naive gui">
+      <option name="closed" value="true" />
+      <created>1756187254662</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1756187254662</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="feat: implement naive gui" />
+    <option name="LAST_COMMIT_MESSAGE" value="feat: implement naive gui" />
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/scripts/legacy/select_parts.py</url>
+          <line>30</line>
+          <option name="timeStamp" value="10" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/functions/transform.py</url>
+          <line>68</line>
+          <option name="timeStamp" value="12" />
+        </line-breakpoint>
+      </breakpoints>
+    </breakpoint-manager>
+  </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/mesh_refinement$select_parts.coverage" NAME="select_parts Coverage Results" MODIFIED="1756187003849" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
+    <SUITE FILE_PATH="coverage/mesh_refinement$select_parts.coverage" NAME="select_parts Coverage Results" MODIFIED="1756192508316" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
     <SUITE FILE_PATH="coverage/mesh_refinement$shift_points.coverage" NAME="shift_points Coverage Results" MODIFIED="1755666191147" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
-    <SUITE FILE_PATH="coverage/mesh_refinement$dev.coverage" NAME="dev Coverage Results" MODIFIED="1756181244964" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
-    <SUITE FILE_PATH="coverage/mesh_refinement$interface.coverage" NAME="interface Coverage Results" MODIFIED="1756176557006" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
+    <SUITE FILE_PATH="coverage/mesh_refinement$dev.coverage" NAME="dev Coverage Results" MODIFIED="1756275281558" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
     <SUITE FILE_PATH="coverage/mesh_refinement$JsonDataModule.coverage" NAME="JsonDataModule Coverage Results" MODIFIED="1756181734842" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
+    <SUITE FILE_PATH="coverage/mesh_refinement$interface.coverage" NAME="interface Coverage Results" MODIFIED="1756280451763" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
     <SUITE FILE_PATH="coverage/mesh_refinement$map_gaussians.coverage" NAME="map_gaussians Coverage Results" MODIFIED="1755623077056" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
     <SUITE FILE_PATH="coverage/mesh_refinement$refine_mesh.coverage" NAME="refine_mesh Coverage Results" MODIFIED="1756112767224" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
     <SUITE FILE_PATH="coverage/mesh_refinement$convex_decompose.coverage" NAME="convex_decompose Coverage Results" MODIFIED="1756183685543" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
+    <SUITE FILE_PATH="coverage/mesh_refinement$transform.coverage" NAME="transform Coverage Results" MODIFIED="1756275469253" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/functions" />
     <SUITE FILE_PATH="coverage/mesh_refinement$merge_meshes.coverage" NAME="merge_meshes Coverage Results" MODIFIED="1755622627249" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
   </component>
 </project>

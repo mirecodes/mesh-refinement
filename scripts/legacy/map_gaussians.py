@@ -25,7 +25,7 @@ class SystemConfig:
     part_groups: Optional[Tuple[Tuple[int, ...], ...]] = ((1, 2, 3, 4, 5, 7, 8, ), (6, 9, ))
 
     # 그룹화된 가우시안 포인트를 저장할 출력 디렉토리
-    gaussian_out_dir: str = "../out/gaussian_parts"
+    gaussian_out_dir: str = "../../out/gaussian_parts"
 
     # --------------------------------------------------------------------------
     # 2. 자동 생성 설정 (필요 시 사용)
