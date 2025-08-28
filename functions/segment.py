@@ -63,6 +63,38 @@ def show_svm_isosurface(clf, scaler, verts, faces, title="SVM surface", grid=64,
     surf_actor  = vedo.Mesh([v, f]).c("yellow").alpha(0.6)
     vedo.show([mesh_actor, surf_actor], title, axes=1, interactive=True)
 
+# --- helpers to size/position planes near the boundary ---
+def _local_bbox_of_category(category_parts, pad_ratio=0.05):
+    """Return (bb_min, bb_max) of a list of trimesh parts with small padding."""
+    if not category_parts:
+        return None, None
+    pmins = [pm.vertices.min(axis=0) for pm in category_parts]
+    pmaxs = [pm.vertices.max(axis=0) for pm in category_parts]
+    bb_min = np.min(np.vstack(pmins), axis=0)
+    bb_max = np.max(np.vstack(pmaxs), axis=0)
+    size = bb_max - bb_min
+    bb_min = bb_min - pad_ratio * size
+    bb_max = bb_max + pad_ratio * size
+    return bb_min, bb_max
+
+def _project_point_to_plane(p, n, d):
+    """Orthogonally project point p onto plane n·x + d = 0."""
+    s = float(np.dot(n, p) + d)
+    return p - s * n
+
+def _best_center_near_boundary(n, d, verts, out, fallback_point):
+    """Choose a plane center near the learned boundary using neighbor verts.
+    - If idx_neighbor exists, pick the vertex with minimal |n·x + d| and project it.
+    - Otherwise, project the fallback point (typically local bbox center).
+    """
+    idx_neighbor = out.get("idx_neighbor", None)
+    if idx_neighbor is not None and len(idx_neighbor) > 0:
+        X = verts[np.asarray(idx_neighbor, dtype=int)]
+        s = X @ n + float(d)
+        k = int(np.argmin(np.abs(s)))
+        return X[k] - s[k] * n
+    return _project_point_to_plane(fallback_point, n, d)
+
 def recolor_parts(vmeshes, belongings, mode, rand_colors):
     if mode == 0:
         for i, vmesh in enumerate(vmeshes):
@@ -198,7 +230,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
                 categories,
                 idx_part,
                 max_hops=10,
-                method='polyhedral',
+                method='rbf',
                 C=1.0,
                 gamma='scale',
                 use_signed_dist=True,
@@ -208,38 +240,42 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
             svm_results[idx_part] = out
 
             plane = out.get('plane', None)
-            if plane is not None:
-                n, d = plane
-                center = -d * n
-                print(n, d)
 
-                mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.25)
-                part_actors = list()
-                for part in categories[idx_part]:
-                    part_actors.append(vedo.Mesh([part.vertices, part.faces]).c("red").alpha(0.75))
-                # part_actor = vedo.Mesh([parts[idx_part].vertices, parts[idx_part].faces]).c("red").alpha(0.8)
-                # Fallback for older/newer API variants: create unit plane then scale it about center
-                plane_actor = vedo.Plane(pos=center, normal=n).c("yellow").alpha(0.5)
-                plane_actor.scale([plane_size, plane_size, 1.0], origin=center)
+            # context actors
+            mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.25)
+            part_actors = [vedo.Mesh([pm.vertices, pm.faces]).c("red").alpha(0.75) for pm in categories[idx_part]]
 
-                vedo.show(
-                    [mesh_actor, part_actors, plane_actor],
-                    f"SVM plane for part #{idx_part}",
-                    axes=1,
-                    interactive=True
-                )
+            # local bbox and plane sizing
+            bb_min_local, bb_max_local = _local_bbox_of_category(categories[idx_part], pad_ratio=0.05)
+            if bb_min_local is not None:
+                local_center = 0.5 * (bb_min_local + bb_max_local)
+                local_diag = float(np.linalg.norm(bb_max_local - bb_min_local))
+                plane_size_local = max(local_diag, 1e-8) * 1.25
             else:
+                bb_min_global = verts.min(axis=0)
+                bb_max_global = verts.max(axis=0)
+                local_center = 0.5 * (bb_min_global + bb_max_global)
+                plane_size_local = float(np.linalg.norm(bb_max_global - bb_min_global)) * 1.25
+
+            def _make_plane_actor(n_arr, d_scalar):
+                n_arr = np.asarray(n_arr, dtype=float)
+                d_scalar = float(d_scalar)
+                center = _best_center_near_boundary(n_arr, d_scalar, verts, out, fallback_point=local_center)
+                try:
+                    return vedo.Plane(pos=center, normal=n_arr, s=plane_size_local).c("yellow").alpha(0.5)
+                except TypeError:
+                    actor = vedo.Plane(pos=center, normal=n_arr).c("yellow").alpha(0.5)
+                    actor.scale([plane_size_local, plane_size_local, 1.0], origin=center)
+                    return actor
+
+            if plane is None:
                 print(f"[info]: part #{idx_part}: non-linear SVM → rendering isosurface (f(x)=0)")
                 # Optional: restrict bbox to selected category parts for speed
                 if len(categories[idx_part]) > 0:
-                    pmins = []
-                    pmaxs = []
-                    for pm in categories[idx_part]:
-                        pmins.append(pm.vertices.min(axis=0))
-                        pmaxs.append(pm.vertices.max(axis=0))
+                    pmins = [pm.vertices.min(axis=0) for pm in categories[idx_part]]
+                    pmaxs = [pm.vertices.max(axis=0) for pm in categories[idx_part]]
                     bb_min_local = np.min(np.vstack(pmins), axis=0)
                     bb_max_local = np.max(np.vstack(pmaxs), axis=0)
-                    # small padding
                     pad = 0.02 * np.linalg.norm(bb_max_local - bb_min_local)
                     bb_min_local -= pad
                     bb_max_local += pad
@@ -248,6 +284,27 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
                     bbox = None
                 show_svm_isosurface(out["clf"], out["scaler"], verts, faces,
                                     title=f"SVM surface for part #{idx_part}", grid=64, bbox=bbox)
+            else:
+                plane_actors = []
+                # plane may be a single (n,d) or an iterable of (n,d)
+                if (isinstance(plane, (list, tuple))
+                    and len(plane) > 0
+                    and isinstance(plane[0], (list, tuple, np.ndarray))):
+                    for item in plane:
+                        if len(item) != 2:
+                            continue
+                        n_i, d_i = item
+                        plane_actors.append(_make_plane_actor(n_i, d_i))
+                else:
+                    n, d = plane
+                    plane_actors.append(_make_plane_actor(n, d))
+
+                vedo.show(
+                    [mesh_actor, *part_actors, *plane_actors],
+                    f"SVM plane(s) for part #{idx_part}",
+                    axes=1,
+                    interactive=True
+                )
 
         except Exception as e:
             print(f"[error]: part #{idx_part}: {e}")
