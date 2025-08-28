@@ -230,7 +230,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
                 categories,
                 idx_part,
                 max_hops=10,
-                method='rbf',
+                method='polyhedral',
                 C=1.0,
                 gamma='scale',
                 use_signed_dist=True,

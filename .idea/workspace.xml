@@ -4,10 +4,20 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3b23249f-f3bc-4220-94ff-c58ac9a0742f" name="Changes" comment="">
+    <list default="true" id="3b23249f-f3bc-4220-94ff-c58ac9a0742f" name="Changes" comment="feat: implement em algorithm based multi-plane estimation">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/functions/estimate.py" beforeDir="false" afterPath="$PROJECT_DIR$/functions/estimate.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/functions/segment.py" beforeDir="false" afterPath="$PROJECT_DIR$/functions/segment.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/interface.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/interface.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/attributes/states.json" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/attributes/states.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_1.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/decomposed_1.ply" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_2.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/decomposed_2.ply" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_3.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/decomposed_3.ply" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_4.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/decomposed_4.ply" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_5.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/decomposed_5.ply" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/decomposed_6.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/decomposed_6.ply" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/refined_mesh.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/refined_mesh.ply" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/transformed_gaussian.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/transformed_gaussian.ply" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/work/spray/meshes/transformed_mesh.ply" beforeDir="false" afterPath="$PROJECT_DIR$/work/spray/meshes/transformed_mesh.ply" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -108,24 +118,27 @@
       <updated>1756284585814</updated>
       <workItem from="1756284586852" duration="4946000" />
       <workItem from="1756344476657" duration="8018000" />
+      <workItem from="1756365910771" duration="2026000" />
     </task>
+    <task id="LOCAL-00001" summary="feat: implement em algorithm based multi-plane estimation">
+      <option name="closed" value="true" />
+      <created>1756358371411</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1756358371411</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
-  <component name="XDebuggerManager">
-    <breakpoint-manager>
-      <breakpoints>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/functions/estimate.py</url>
-          <line>61</line>
-          <option name="timeStamp" value="2" />
-        </line-breakpoint>
-      </breakpoints>
-    </breakpoint-manager>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="feat: implement em algorithm based multi-plane estimation" />
+    <option name="LAST_COMMIT_MESSAGE" value="feat: implement em algorithm based multi-plane estimation" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/mesh_refinement$interface.coverage" NAME="interface Coverage Results" MODIFIED="1756357893984" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
+    <SUITE FILE_PATH="coverage/mesh_refinement$interface.coverage" NAME="interface Coverage Results" MODIFIED="1756362291266" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/scripts" />
   </component>
 </project>
