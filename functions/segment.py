@@ -29,7 +29,7 @@ def _prepare_separator_and_center(plane, out, verts, local_center):
       separator_for_boundary: (n,d) for plane or {'clf','scaler'} for SVM
       center_for_loop: plane center near boundary (None for non-linear SVM)
     """
-    if plane is None:
+    if not plane:
         return {"clf": out["clf"], "scaler": out["scaler"]}, None
     if _is_multi_plane(plane):
         n0, d0 = plane[0]
@@ -337,7 +337,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
             categories,
             idx_part,
             max_hops=10,
-            method='rbf',
+            method='linear',
             C=1.0,
             gamma='scale',
             use_signed_dist=True,
@@ -359,6 +359,22 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
 
         separator_for_boundary, center_for_loop = _prepare_separator_and_center(plane, out, verts, local_center)
 
+        if out.get('method', None) == 'linear':
+            # Use the first plane (n0, d0). Visualize a normal starting at local_center along +n0.
+            if _is_multi_plane(plane):
+                n0, d0 = plane[0]
+            else:
+                n0, d0 = plane
+            n0 = np.asarray(n0, dtype=float)
+            n0 /= (np.linalg.norm(n0) + 1e-12)
+            # Start at local_center and go in +n0 direction
+            p0 = np.asarray(local_center, dtype=float)
+            seg_len = float(plane_size_local) * 0.5
+            p1 = p0 + seg_len * n0
+            normal_info = {"p0": p0, "p1": p1}
+        else:
+            normal_info = None
+
         # persist everything needed for visualization
         calc_results[idx_part] = dict(
             out=out,
@@ -367,6 +383,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
             plane_size=plane_size_local,
             separator=separator_for_boundary,
             center_for_loop=center_for_loop,
+            normal=normal_info,
         )
 
     # -------- Phase 2: VISUALIZATION (consumes cached results) --------
@@ -378,12 +395,13 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
         plane_size_local = res["plane_size"]
         separator_for_boundary = res["separator"]
         center_for_loop = res["center_for_loop"]
+        normal_info = res.get("normal", None)
 
         # context actors
         mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.25)
         part_actors = [vedo.Mesh([pm.vertices, pm.faces]).c("red").alpha(0.75) for pm in categories[idx_part]]
 
-        if plane is None:
+        if not plane:
             print(f"[info]: part #{idx_part}: non-linear SVM → rendering isosurface (f(x)=0)")
             bbox = _bbox_for_parts(categories[idx_part], pad_ratio=0.02)
             boundary_actor = _make_boundary_lines(verts, faces, separator_for_boundary, idx_part, color="cyan", lw=3)
@@ -404,6 +422,14 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
             # boundary edge overlay using chosen separator
             boundary_actor = _make_boundary_lines(verts, faces, separator_for_boundary, idx_part, plane_center=center_for_loop, color="cyan", lw=3)
             extra_actors = [boundary_actor] if boundary_actor is not None else []
+
+            # Visualize the normal (arrow) from local_center along +n0
+            if normal_info is not None:
+                try:
+                    normal_actor = vedo.Arrow(normal_info["p0"], normal_info["p1"]).c("orange").lw(2).alpha(1.0)
+                except TypeError:
+                    normal_actor = vedo.Line(normal_info["p0"], normal_info["p1"]).c("orange").lw(3).alpha(1.0)
+                extra_actors.append(normal_actor)
 
             vedo.show(
                 [mesh_actor, *part_actors, *plane_actors, *extra_actors],

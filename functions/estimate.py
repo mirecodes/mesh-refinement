@@ -153,13 +153,18 @@ def label_by_separator(verts: np.ndarray, separator) -> tuple[np.ndarray, np.nda
     """
     Compute separating scores and labels from either:
     - plane (n, d): score = n·x + d
+    - list of planes [(n, d), ...]: use the first plane (common in linear/polyhedral APIs)
     - svm dict: {'clf': fitted_sklearn_svm, 'scaler': fitted_StandardScaler}
                 score = clf.decision_function(scaler.transform(x))
     Returns:
         scores: (V,) float array
         labels: (V,) int array in {1, 2} by sign of score (>=0 -> 1, <0 -> 2)
     """
-    if isinstance(separator, tuple) and len(separator) == 2:
+    # Accept a list of planes by taking the first one
+    if isinstance(separator, list) and len(separator) > 0 and len(separator[0]) == 2:
+        n, d = np.asarray(separator[0][0], dtype=float), float(separator[0][1])
+        s = verts @ n + d
+    elif isinstance(separator, tuple) and len(separator) == 2:
         n, d = np.asarray(separator[0], dtype=float), float(separator[1])
         s = verts @ n + d
     elif isinstance(separator, dict) and "clf" in separator and "scaler" in separator:
@@ -168,7 +173,7 @@ def label_by_separator(verts: np.ndarray, separator) -> tuple[np.ndarray, np.nda
         Xs = scaler.transform(verts.astype(float))
         s = clf.decision_function(Xs).astype(float)
     else:
-        raise ValueError("separator must be (n, d) or {'clf':..., 'scaler':...}")
+        raise ValueError("separator must be (n, d), [(n, d), ...], or {'clf':..., 'scaler':...}")
     labels = np.where(s >= 0.0, 1, 2).astype(int)
     return s, labels
 
@@ -402,8 +407,11 @@ def learn_separator_main(
     """End-to-end learning of a separating boundary for a selected part.
 
     Returns dict with keys: 'clf', 'scaler', 'method', 'plane', 'idx_pos',
-    'idx_neg', 'idx_neighbor', 'dist'. For 'polyhedral', 'plane' is a list of
-    (n, d); for 'linear', a single (n, d); for 'rbf', None.
+    'idx_neg', 'idx_neighbor', 'dist'.
+    - 'plane' is always a list of (n, d):
+        * method == 'linear'  -> one plane: [(n, d)]
+        * method == 'polyhedral' -> K planes: [(n1, d1), ..., (nK, dK)]
+        * method == 'rbf'     -> [] (no linear plane)
     """
     # (0) Original mesh
     ms.set_current_mesh(0)
@@ -452,8 +460,8 @@ def learn_separator_main(
         method=method, C=C, gamma=gamma, balance=balance, random_state=random_state
     )
 
-    # (7) Recover plane for linear SVM
-    plane = None
+    # (7) Recover plane(s)
+    plane = []
     if method == "linear":
         w_s = clf.coef_.ravel()
         b_s = clf.intercept_[0]
@@ -462,7 +470,10 @@ def learn_separator_main(
         norm = np.linalg.norm(w) + 1e-12
         n = w / norm
         d = b / norm
-        plane = (n, d)
+        plane = [(n, d)]
+    elif method == "rbf":
+        # Kernel SVM has no single separating plane
+        plane = []
 
     return {
         "clf": clf,
