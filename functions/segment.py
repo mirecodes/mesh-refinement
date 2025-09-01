@@ -9,14 +9,9 @@ from json_handler import JsonHandler
 from collections import deque
 import os
 
+from functions.estimate import (learn_separator_main, )
+from functions.graphs import (build_adjacency_graph, split_seed_boundary, classify_vertices, build_joints_hop1, )
 
-from functions.estimate import (
-    learn_separator_main,
-    split_seed_boundary,
-    classify_vertices,          # 이미 추가됨
-    build_adjacency_graph,      # 추가
-    filter_boundary_vertices,   # 추가
-)
 # --- small helpers to simplify branching & reuse ---
 def _is_multi_plane(plane):
     return isinstance(plane, (list, tuple)) and len(plane) > 0 and isinstance(plane[0], (list, tuple, np.ndarray))
@@ -226,97 +221,6 @@ def recolor_parts(vmeshes, belongings, mode, rand_colors):
             else:
                 vmesh.c("lightblue").alpha(0.4)
 
-def _connected_components(subset_idxs, adj):
-    """adj 상에서 subset_idxs로 유도된 부분그래프의 연결요소들 반환."""
-    S = set(map(int, subset_idxs))
-    seen = set()
-    comps = []
-    for s in list(S):
-        if s in seen:
-            continue
-        q = deque([s]); seen.add(s)
-        comp = []
-        while q:
-            u = q.popleft()
-            comp.append(u)
-            for v in adj[u]:
-                if v in S and v not in seen:
-                    seen.add(v); q.append(v)
-        comps.append(np.array(comp, dtype=int))
-    return comps
-
-
-def build_joints_hop1(verts, faces, vert_label):
-    """
-    Build joints using only hop=1 boundary adjacency.
-    Returns: {'joints', 'part_to_joints', 'connections'}
-    """
-    V = verts.shape[0]
-
-    # ✅ 재사용: estimate.py의 adjacency 빌더
-    adj = build_adjacency_graph(faces.astype(int, copy=False), V)
-
-    part_ids = np.unique(vert_label)
-    part_ids = part_ids[(part_ids > 0)]  # 배경 0 제외
-
-    joints = {}
-    part_to_joints = {int(pid): [] for pid in part_ids}
-    connections = []
-    seen_keys = set()
-    next_jid = 1
-
-    for i in part_ids:
-        i = int(i)
-
-        # ✅ 재사용: estimate.py의 경계 정점 추출
-        B_i = filter_boundary_vertices(adj, vert_label, i)
-        if B_i.size == 0:
-            continue
-
-        # 같은 상대 파트 j와 접하는 경계 정점 모으기
-        neighbors_of_i = {}
-        for u in B_i:
-            js = set(int(vert_label[v]) for v in adj[u] if vert_label[v] > 0 and vert_label[v] != i)
-            for j in js:
-                neighbors_of_i.setdefault(j, []).append(u)
-
-        for j, Ui in neighbors_of_i.items():
-            Ui = np.unique(np.asarray(Ui, dtype=int))
-            if Ui.size == 0:
-                continue
-
-            # 🔸 이 함수는 segment.py에 남겨둬도 됨 (estimate.py엔 없음)
-            comps = _connected_components(Ui, adj)
-
-            for comp in comps:
-                if comp.size == 0:
-                    continue
-                centroid = verts[comp].mean(axis=0)
-                key = (min(i, j), max(i, j), *np.round(centroid, 5))
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-
-                jid = f"J{next_jid}"; next_jid += 1
-                label_i = f"joint_{len(part_to_joints[i]) + 1}"
-                joints[jid] = {
-                    "id": jid,
-                    "parts": [i, int(j)],
-                    "centroid": centroid.tolist(),
-                    "size": int(comp.size),
-                    "owner": i,
-                }
-                part_to_joints[i].append({"label": label_i, "joint_id": jid, "other": int(j)})
-                part_to_joints[int(j)].append({"label": None, "joint_id": jid, "other": i})
-                connections.append({"part_a": i, "joint_label_a": label_i, "part_b": int(j), "joint_id": jid})
-
-    return {
-        "joints": joints,
-        "part_to_joints": part_to_joints,
-        "connections": connections,
-    }
-
-
 
 def on_left_click(event, vmeshes, belongings, prevs, shared, rand_colors, plt):
     vmesh = event.actor
@@ -499,15 +403,15 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
         joint_index = build_joints_hop1(verts, faces, vert_label)
 
         # Save joints.json alongside states
-        out_path = getattr(cfgs, 'json_states_dir')
-        with open(out_path, 'w') as f:
-            json.dump(joint_index, f, indent=2)
-        print(f"[info]: joints saved to {out_path}; #joints={len(joint_index['joints'])}")
-        for pid, lst in joint_index['part_to_joints'].items():
-            if not lst:
-                continue
-            labels = ', '.join([f"{it['label']}→P{it['other']}({it['joint_id']})" if it['label'] else f"→P{it['other']}({it['joint_id']})" for it in lst])
-            print(f"[info]: part {pid}: {labels}")
+        # out_path = getattr(cfgs, 'json_states_dir')
+        # with open(out_path, 'w') as f:
+        #     json.dump(joint_index, f, indent=2)
+        # print(f"[info]: joints saved to {out_path}; #joints={len(joint_index['joints'])}")
+        # for pid, lst in joint_index['part_to_joints'].items():
+        #     if not lst:
+        #         continue
+        #     labels = ', '.join([f"{it['label']}→P{it['other']}({it['joint_id']})" if it['label'] else f"→P{it['other']}({it['joint_id']})" for it in lst])
+        #     print(f"[info]: part {pid}: {labels}")
     except Exception as e:
         print(f"[warn]: joint build failed before visualization: {e}")
 
