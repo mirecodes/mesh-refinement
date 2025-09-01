@@ -149,6 +149,57 @@ def filter_boundary_vertices(adj: list[list[int]], vert_label: np.ndarray, idx_p
     return boundary if len(boundary) > 0 else seeds
 
 
+def label_by_separator(verts: np.ndarray, separator) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute separating scores and labels from either:
+    - plane (n, d): score = n·x + d
+    - svm dict: {'clf': fitted_sklearn_svm, 'scaler': fitted_StandardScaler}
+                score = clf.decision_function(scaler.transform(x))
+    Returns:
+        scores: (V,) float array
+        labels: (V,) int array in {1, 2} by sign of score (>=0 -> 1, <0 -> 2)
+    """
+    if isinstance(separator, tuple) and len(separator) == 2:
+        n, d = np.asarray(separator[0], dtype=float), float(separator[1])
+        s = verts @ n + d
+    elif isinstance(separator, dict) and "clf" in separator and "scaler" in separator:
+        scaler = separator["scaler"]
+        clf = separator["clf"]
+        Xs = scaler.transform(verts.astype(float))
+        s = clf.decision_function(Xs).astype(float)
+    else:
+        raise ValueError("separator must be (n, d) or {'clf':..., 'scaler':...}")
+    labels = np.where(s >= 0.0, 1, 2).astype(int)
+    return s, labels
+
+
+def split_seed_boundary(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    separator,
+    idx_part: int = 1
+) -> tuple[np.ndarray, int, np.ndarray]:
+    """
+    1) Split mesh by separator into labels {1,2}
+    2) Seed = vertex in idx_part closest to the separator (min |score|)
+    3) Boundary = boundary vertices of idx_part
+    Returns:
+        vert_label: (V,)
+        seed_idx: int
+        boundary: (K,)
+    """
+    scores, vert_label = label_by_separator(verts, separator)
+    adj = build_adjacency_graph(faces, len(verts))
+
+    part_verts = np.where(vert_label == idx_part)[0]
+    if part_verts.size == 0:
+        return vert_label, -1, np.array([], dtype=int)
+
+    seed_idx = int(part_verts[np.argmin(np.abs(scores[part_verts]))])
+    boundary = filter_boundary_vertices(adj, vert_label, idx_part)
+    return vert_label, seed_idx, boundary
+
+
 def filter_proximal_vertices(
     adj: list[list[int]],
     vert_label: np.ndarray,
