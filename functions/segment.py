@@ -188,17 +188,18 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
 
     rlps = cluster_reciprocal_loop_pairs(results_list, w_pos=1.0, w_ang=0.5, cost_max=None)
 
-    vectors = list()
-
     # Calculate Vectors
     for i, rlp in enumerate(rlps):
+        # Extract centers
         center = rlp['center']
-        A = rlp['a']; B = rlp['b']
-        # Extract normals; fall back to PCA normals if plane not available
+
+        # Extract normals
+        A = rlp['a']['linear']; B = rlp['b']['linear']
         if A.get('plane') and len(A['plane']) > 0 and B.get('plane') and len(B['plane']) > 0:
             nA = np.asarray(A['plane'][0][0], dtype=float)
             nB = np.asarray(B['plane'][0][0], dtype=float)
-            dA = float(A['plane'][0][1]); dB = float(B['plane'][0][1])
+            dA = float(A['plane'][0][1]);
+            dB = float(B['plane'][0][1])
         else:
             nA = np.asarray(A['pca_normal'], dtype=float)
             nB = np.asarray(B['pca_normal'], dtype=float)
@@ -209,8 +210,21 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
         n = np.mean(np.vstack([nA, nB]), axis=0)
         n = n / (np.linalg.norm(n) + 1e-12)
         d = 0.5 * (dA + dB)
+        rlps[i]['vectors'] = []
+        rlps[i]['vectors'].append({'center': center, 'n': n, 'd': d})
 
-        vectors.append({'center': center, 'n': n, 'd': d})
+        # Extract intersections
+        A = rlp['a']['polyhedral']; B = rlp['b']['polyhedral']
+        if A.get('plane') and len(A['plane']) > 0:
+            planes = A.get('plane')
+            planes_num = len(planes)
+            for u in range(planes_num):
+                for v in range(u+1, planes_num):
+                    n = np.cross(planes[u][0], planes[v][0])
+                    rlps[i]['vectors'].append({'center': center, 'n': n, 'd': np.zeros(3)})
+
+        # Align directions before averaging
+
 
 
     # -------- Phase 2: VISUALIZATION (per RLP) --------
@@ -233,28 +247,36 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
                 actor = vedo.Mesh([tri.vertices, tri.faces]).c(part_colors[min(j, 1)]).alpha(0.25)
                 part_actors.append(actor)
 
-        # corresponding vector (center + direction) for this RLP, if available
-        vec_actor = None
-        if i < len(vectors):
-            v = vectors[i]
-            c = np.asarray(v["center"], dtype=float)
-            n = np.asarray(v["n"], dtype=float)
-            if n.ndim == 0:
-                # in case n is a scalar by mistake, skip arrow
-                n = None
-            if n is not None:
-                n = n / (np.linalg.norm(n) + 1e-12)
-                seg_len = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))) * 0.2
-                p0 = c
-                p1 = c + seg_len * n
-                try:
-                    vec_actor = vedo.Arrow(p0, p1).c("orange").alpha(1.0)
-                except TypeError:
-                    vec_actor = vedo.Line(p0, p1).c("orange").alpha(1.0)
+        # corresponding vectors (center + direction) for this RLP, visualize all stored vectors
+        vec_actors = []
+        vecs = rlp.get('vectors', [])
+        if isinstance(vecs, dict):
+            vecs = [vecs]
+        # scale once
+        seg_len = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))) * 0.2
+        # color palette for multiple vectors
+        colors = ["orange", "green", "magenta", "cyan", "yellow", "purple"]
+        for k, v in enumerate(vecs):
+            if v is None:
+                continue
+            c = np.asarray(v.get("center", rlp.get("center", [0,0,0])), dtype=float)
+            n = np.asarray(v.get("n"), dtype=float)
+            if n.ndim == 0 or not np.isfinite(n).all():
+                continue
+            nn = np.linalg.norm(n)
+            if nn < 1e-12:
+                continue
+            n = n / nn
+            p0 = c
+            p1 = c + seg_len * n
+            col = colors[k % len(colors)]
+            try:
+                a = vedo.Arrow(p0, p1).c(col).alpha(1.0)
+            except TypeError:
+                a = vedo.Line(p0, p1).c(col).alpha(1.0)
+            vec_actors.append(a)
 
-        show_actors = [mesh_actor, *part_actors]
-        if vec_actor is not None:
-            show_actors.append(vec_actor)
+        show_actors = [mesh_actor, *part_actors, *vec_actors]
 
         vedo.settings.use_depth_peeling = True
         vedo.show(
