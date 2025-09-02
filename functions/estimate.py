@@ -77,6 +77,7 @@ def train_polyhedral_planes(
     max_iter: int = 20,
     C: float = 1.0,
     random_state: int = 0,
+    logic: str = "auto",            # 'and' | 'or' | 'auto'
     reinit_when_empty: bool = True,
 ) -> dict:
     """Train K linear planes forming a convex polyhedral positive region.
@@ -97,45 +98,98 @@ def train_polyhedral_planes(
     Xp_s = scaler.transform(Xp)
     Xn_s = scaler.transform(Xn)
 
-    # Initialize by a single LinearSVC, then replicate with noise
-    base = LinearSVC(C=C, class_weight="balanced", max_iter=3000, random_state=random_state)
-    base.fit(np.vstack([Xp_s, Xn_s]), np.hstack([np.ones(len(Xp_s)), -np.ones(len(Xn_s))]))
-    W = np.tile(base.coef_.ravel(), (K, 1)).astype(np.float64)
-    b = np.tile(base.intercept_[0], K).astype(np.float64)
-    W += 0.05 * rng.standard_normal(W.shape)
-    b += 0.05 * rng.standard_normal(b.shape)
+    def _em_train_for_logic(_logic: str):
+        # Initialize by a single LinearSVC, then replicate with noise
+        base = LinearSVC(C=C, class_weight="balanced", max_iter=3000, random_state=random_state)
+        base.fit(np.vstack([Xp_s, Xn_s]), np.hstack([np.ones(len(Xp_s)), -np.ones(len(Xn_s))]))
+        W = np.tile(base.coef_.ravel(), (K, 1)).astype(np.float64)
+        b = np.tile(base.intercept_[0], K).astype(np.float64)
+        W += 0.05 * rng.standard_normal(W.shape)
+        b += 0.05 * rng.standard_normal(b.shape)
 
-    assign = [np.array([], dtype=int) for _ in range(K)]
+        # assignments
+        assign_neg = [np.array([], dtype=int) for _ in range(K)]
+        assign_pos = [np.array([], dtype=int) for _ in range(K)]  # only used for 'or'
 
-    for _ in range(max_iter):
-        # E-step: assign each negative to the plane with largest score
-        S = np.stack([Xn_s @ W[j].ravel() + b[j] for j in range(K)], axis=1)
-        jstar = np.argmax(S, axis=1)
-        new_assign = [np.where(jstar == j)[0] for j in range(K)]
+        for _ in range(max_iter):
+            # E-step
+            # scores for negatives
+            Sneg = np.stack([Xn_s @ W[j].ravel() + b[j] for j in range(K)], axis=1)  # (Nneg,K)
+            jstar_neg = np.argmax(Sneg, axis=1)  # most positive plane
+            new_assign_neg = [np.where(jstar_neg == j)[0] for j in range(K)]
 
-        # Convergence check
-        if all(np.array_equal(a, na) for a, na in zip(assign, new_assign)):
-            break
-        assign = new_assign
+            if _logic == "or":
+                # positives choose their best supporting plane
+                Spos = np.stack([Xp_s @ W[j].ravel() + b[j] for j in range(K)], axis=1)  # (Npos,K)
+                jstar_pos = np.argmax(Spos, axis=1)
+                new_assign_pos = [np.where(jstar_pos == j)[0] for j in range(K)]
+            else:
+                new_assign_pos = [np.arange(len(Xp_s)) for _ in range(K)]  # all positives to every plane
 
-        # M-step: retrain each plane with all positives vs its assigned negatives
-        for j in range(K):
-            idxN_j = assign[j]
-            if idxN_j.size == 0:
-                if reinit_when_empty:
+            # Convergence check
+            if (all(np.array_equal(a, na) for a, na in zip(assign_neg, new_assign_neg)) and
+                all(np.array_equal(a, na) for a, na in zip(assign_pos, new_assign_pos))):
+                assign_neg, assign_pos = new_assign_neg, new_assign_pos
+                break
+
+            assign_neg, assign_pos = new_assign_neg, new_assign_pos
+
+            # M-step
+            for j in range(K):
+                idxP_j = assign_pos[j]
+                idxN_j = assign_neg[j]
+                if idxN_j.size == 0 and idxP_j.size == 0:
+                    continue
+                if idxN_j.size == 0 and reinit_when_empty:
+                    # small jitter to avoid dead plane
                     W[j] += 0.01 * rng.standard_normal(W[j].shape)
                     b[j] += 0.01 * rng.standard_normal(())
-                continue
+                    continue
 
-            X_pos = Xp_s
-            X_neg = Xn_s[idxN_j]
-            X_j = np.vstack([X_pos, X_neg])
-            y_j = np.hstack([np.ones(len(X_pos)), -np.ones(len(X_neg))])
+                X_pos = Xp_s if _logic != "or" else Xp_s[idxP_j]  # 'and': all positives; 'or': assigned positives
+                X_neg = Xn_s[idxN_j] if idxN_j.size > 0 else np.empty((0, Xp_s.shape[1]), dtype=Xp_s.dtype)
+                if X_pos.size == 0:
+                    # if no positives assigned (can happen in 'or'), skip update
+                    continue
+                X_j = np.vstack([X_pos, X_neg])
+                y_j = np.hstack([np.ones(len(X_pos)), -np.ones(len(X_neg))])
 
-            clf = LinearSVC(C=C, class_weight="balanced", max_iter=3000, random_state=random_state)
-            clf.fit(X_j, y_j)
-            W[j] = clf.coef_.ravel()
-            b[j] = clf.intercept_[0]
+                clf = LinearSVC(C=C, class_weight="balanced", max_iter=3000, random_state=random_state)
+                clf.fit(X_j, y_j)
+                W[j] = clf.coef_.ravel()
+                b[j] = clf.intercept_[0]
+
+        return W, b
+
+    if logic in ("and", "or"):
+        W, b = _em_train_for_logic(logic)
+        selected_logic = logic
+    elif logic == "auto":
+        # Train both and pick by accuracy on training set
+        W_and, b_and = _em_train_for_logic("and")
+        W_or,  b_or  = _em_train_for_logic("or")
+        # Evaluate
+        Xs_all = np.vstack([Xp_s, Xn_s])
+        y_all = np.hstack([np.ones(len(Xp_s)), -np.ones(len(Xn_s))]).astype(int)
+        def _acc(W_, b_):
+            S_all = np.stack([Xs_all @ W_[j].ravel() + b_[j] for j in range(K)], axis=1)
+            pred_and = np.where(S_all.min(axis=1) > 0.0, 1, -1)
+            acc_and = float(np.mean(pred_and == y_all))
+            pred_or  = np.where(S_all.max(axis=1) > 0.0, 1, -1)
+            acc_or  = float(np.mean(pred_or == y_all))
+            return acc_and, acc_or
+        acc_and, acc_or = _acc(W_and, b_and)
+        acc_and2, acc_or2 = _acc(W_or, b_or)
+        # Pick the best (consider both logic with their own training)
+        candidates = [
+            ("and", W_and, b_and, acc_and),
+            ("or",  W_and, b_and, acc_or),
+            ("and", W_or,  b_or,  acc_and2),
+            ("or",  W_or,  b_or,  acc_or2),
+        ]
+        selected_logic, W, b, selected_score = max(candidates, key=lambda t: t[3])
+    else:
+        raise ValueError(f"Unknown logic: {logic}")
 
     # Recover planes in original coordinates: n·x + d = 0
     planes = []
@@ -155,7 +209,34 @@ def train_polyhedral_planes(
         m.intercept_ = np.array([b_s])
         models.append(m)
 
-    return {"planes": planes, "models": models, "scaler": scaler}
+    # ---- Evaluate selected weights with both logics
+    Xs_all = np.vstack([Xp_s, Xn_s])
+    y_all = np.hstack([np.ones(len(Xp_s)), -np.ones(len(Xn_s))]).astype(int)
+    S_all = np.stack([Xs_all @ W[j].ravel() + b[j] for j in range(K)], axis=1)
+    acc_and = float(np.mean(np.where(S_all.min(axis=1) > 0.0, 1, -1) == y_all))
+    acc_or  = float(np.mean(np.where(S_all.max(axis=1) > 0.0, 1, -1) == y_all))
+    selected_score = acc_and if selected_logic == "and" else acc_or
+
+    return {
+        "planes": planes,
+        "models": models,
+        "scaler": scaler,
+        "logic": selected_logic,
+        "scores": {"and": acc_and, "or": acc_or},
+        "score": selected_score,
+    }
+
+def margin_score(clf, Xs, y):
+    """
+    clf: 학습된 SVM (LinearSVC or SVC)
+    Xs: scaler로 변환된 feature
+    y: {+1, -1} 라벨
+    """
+    scores = clf.decision_function(Xs)
+    margins = y * scores   # >0: 올바른 분류, <0: 오분류
+    clipped_margins = np.clip(margins, 0, None) # or np.clip(margins, 0, None)
+    # 평균 margin을 점수로 사용 (음수면 패널티)
+    return np.mean(margins)
 
 
 # -----------------------------------------------------------------------------
@@ -167,7 +248,7 @@ def learn_separator_main(
     categories: list[list[trimesh.Trimesh]],
     idx_part: int,
     max_hops: int = 5,
-    method: str = "linear",          # 'linear' | 'rbf' | 'polyhedral'
+    method: str | list[str] = "all",   # 'linear' | 'rbf' | 'polyhedral' | 'all' | list of these
     C: float = 1.0,
     gamma: str | float = "scale",
     use_signed_dist: bool = True,
@@ -175,21 +256,26 @@ def learn_separator_main(
     balance: str = "downsample",      # 'downsample' | 'weights' | 'none'
     random_state: int | None = 0,
 ) -> list[TypedDict]:
-    """End-to-end learning of a separating boundary for a selected part.
+    """
+    End-to-end learning of separating boundaries for a selected part.
 
-    Returns dict with keys: 'clf', 'scaler', 'method', 'plane', 'idx_pos',
-    'idx_neg', 'idx_neighbor', 'dist'.
-    - 'plane' is always a list of (n, d):
-        * method == 'linear'  -> one plane: [(n, d)]
-        * method == 'polyhedral' -> K planes: [(n1, d1), ..., (nK, dK)]
-        * method == 'rbf'     -> [] (no linear plane)
+    Returns a list of result dicts; for each boundary loop, one or more variants are appended
+    depending on `method`:
+      - 'linear'      → one plane: [(n, d)]
+      - 'polyhedral'  → K planes: [(n1, d1), ..., (nK, dK)]
+      - 'rbf'         → [] (no linear plane)
+      - 'all' or list → include multiple variants per loop (one entry per method)
+
+    Each result dict contains:
+      'loop', 'center', 'pca_normal', 'clf', 'scaler', 'method', 'plane',
+      'parent', 'child', 'idx_pos', 'idx_neg', 'idx_neighbor', 'dist'
     """
     # (0) Original mesh
     ms.set_current_mesh(0)
     verts = ms.current_mesh().vertex_matrix()
     faces = ms.current_mesh().face_matrix().astype(np.int64)
 
-    # (1) Adjacency
+    # (1) Build adjacency
     adj = build_adjacency_graph(faces, len(verts))
 
     # (2) Vertex labeling by categories
@@ -206,36 +292,34 @@ def learn_separator_main(
     boundary_indices = filter_boundary_vertices(adj, vert_label, idx_part)
     loops = segregate_loops(adj, boundary_indices)
 
-    # loops: segregate_loops(adj, boundary_indices)의 결과 (List[np.ndarray])
-    # visualize_boundary_loops(
-    #     ms, categories, idx_part, loops,
-    #     show_original_mesh=True,  # 원본 메쉬 켜기
-    #     tube_radius=0.001,
-    #     sphere_radius=0.004,
-    #     background="white",
-    # )
-
+    # normalize `method` to a list of methods to run
+    if isinstance(method, (list, tuple)):
+        methods_to_run = [m for m in method]
+    elif method == "all":
+        methods_to_run = ["linear", "rbf", "polyhedral"]
+    else:
+        methods_to_run = [str(method)]
 
     results = list()
 
+    # (5) Iterate through the entire loops
     for order, loop in enumerate(loops):
-        # (4) Neighborhood (hop < K)
+        # (A) Find the neighborhood vertices (hop < K)
         idx_neighbor, dist = filter_proximal_vertices(adj, vert_label, loop, idx_part, max_hops)
 
-        # (5) Positive/negative split
+        # (B) Split positive, negative points
         neighbor_label = vert_label[idx_neighbor]
         idx_pos = idx_neighbor[neighbor_label == idx_part]
         idx_neg = idx_neighbor[(neighbor_label > 0) & (neighbor_label != idx_part)]
 
-        # find the most frequent contact neighbor
+        # (C) Find the most frequently contact neighbor
         idx_nbr_dist1, dist1 = filter_proximal_vertices(adj, vert_label, loop, idx_part, 2)
-
         prox_nbr_label = vert_label[idx_nbr_dist1]
         idx_prox_nbr = idx_nbr_dist1[(prox_nbr_label > 0) & (prox_nbr_label != idx_part)]
         values, counts = np.unique(vert_label[idx_prox_nbr], return_counts=True)
         freq_prox_nbr = values[np.argmax(counts)]
 
-        # PCA plane normal of the loop points (smallest singular vector)
+        # (D) Estimate PCA plane normal of the loop points (smallest singular vector)
         loop_idx = np.asarray(loop, dtype=int).ravel()
         pts_loop = verts[loop_idx]
         ctr_loop = pts_loop.mean(axis=0)
@@ -251,7 +335,7 @@ def learn_separator_main(
         n_pca = n_pca / (np.linalg.norm(n_pca) + 1e-12)
         pca_normal = n_pca
 
-        # find the loop center
+        # (E) Find the loop center
         loop_idx = np.asarray(loop, dtype=int)
         if loop_idx.size == 0:
             raise RuntimeError("[error]: Empty loop indices.")
@@ -260,58 +344,95 @@ def learn_separator_main(
         if len(idx_pos) == 0 or len(idx_neg) == 0:
             raise RuntimeError("[error]: Not enough positives/negatives in the neighborhood for SVM learning.")
 
-        # (6) Train: polyhedral / single-plane or kernel SVM
-        if method == "polyhedral":
-            poly = train_polyhedral_planes(verts, idx_pos, idx_neg, K=2, C=C, random_state=random_state)
-            results.append( {
-                "loop": loop,
-                "center": center,
-                "pca_normal": pca_normal,
-                "clf": None,
-                "scaler": poly["scaler"],
-                "method": method,
-                "plane": poly["planes"],
-                "parent": idx_part,
-                "child": freq_prox_nbr,
-                "idx_pos": np.unique(idx_pos),
-                "idx_neg": np.unique(idx_neg),
-                "idx_neighbor": idx_neighbor,
-                "dist": dist,
-            })
-        elif method in ("linear", "rbf"):
+        # (F) Train one or more variants and append all results
+
+        result_linear = {}
+        result_rbf = {}
+        result_polyhedral = {}
+
+        # evaluation metric
+        pos = np.unique(idx_pos)
+        neg = np.unique(idx_neg)
+        Xp, Xn = verts[pos], verts[neg]
+        X = np.vstack([Xp, Xn])
+        y = np.hstack([np.ones(len(Xp)), -np.ones(len(Xn))]).astype(int)
+
+
+        if "linear" in methods_to_run:
             clf, scaler = train_boundary_svm(
                 verts, idx_pos, idx_neg,
-                method=method, C=C, gamma=gamma, balance=balance, random_state=random_state
+                method="linear", C=C, gamma=gamma, balance=balance, random_state=random_state
             )
+            w_s = clf.coef_.ravel()
+            b_s = clf.intercept_[0]
+            w = w_s / scaler.scale_
+            b = b_s - np.dot(w, scaler.mean_)
+            norm = np.linalg.norm(w) + 1e-12
+            n = w / norm
+            d = b / norm
+            plane = [(n, d)]
 
-            plane = []
-            if method == "linear":
-                w_s = clf.coef_.ravel()
-                b_s = clf.intercept_[0]
-                w = w_s / scaler.scale_
-                b = b_s - np.dot(w, scaler.mean_)
-                norm = np.linalg.norm(w) + 1e-12
-                n = w / norm
-                d = b / norm
-                plane = [(n, d)]
+            # === build evaluation set for this loop (same split used for training) ===
+            Xs = scaler.transform(X)
+            score = float(margin_score(clf, Xs, y))
 
-            results.append( {
-                "loop": loop,
-                "center": center,
-                "pca_normal": pca_normal,
+            result_linear = {
+                "method": "linear",
                 "clf": clf,
                 "scaler": scaler,
-                "method": method,
                 "plane": plane,
-                "parent": idx_part,
-                "child": freq_prox_nbr,
-                "idx_pos": np.unique(idx_pos),
-                "idx_neg": np.unique(idx_neg),
-                "idx_neighbor": idx_neighbor,
-                "dist": dist,
-            })
-        else:
-            raise ValueError("[error]: Unknown method '%s'" % method)
+                "score": score,
+            }
+
+        if "rbf" in methods_to_run:
+            clf, scaler = train_boundary_svm(
+                verts, idx_pos, idx_neg,
+                method="rbf", C=C, gamma=gamma, balance=balance, random_state=random_state
+            )
+            Xs = scaler.transform(X)
+            score = float(margin_score(clf, Xs, y))
+
+            result_rbf = {
+                "method": "rbf",
+                "clf": clf,
+                "scaler": scaler,
+                "plane": [],
+                "score": score,
+            }
+
+        if "polyhedral" in methods_to_run:
+            poly = train_polyhedral_planes(verts, idx_pos, idx_neg, K=2, C=C, random_state=random_state)
+            plane = poly["planes"]
+            clf = None
+            scaler = poly["scaler"]
+            score = poly["score"]
+
+            result_polyhedral = {
+                "method": "polyhedral",
+                "clf": clf,
+                "scaler": scaler,
+                "plane": plane,
+                "score": score,
+            }
+
+        results.append({
+            # joint information
+            "parent": idx_part,
+            "child": freq_prox_nbr,
+            # loop characteristics
+            "loop": loop,
+            "center": center,
+            "pca_normal": pca_normal,
+            # division backgrounds
+            "idx_pos": np.unique(idx_pos),
+            "idx_neg": np.unique(idx_neg),
+            "idx_neighbor": idx_neighbor,
+            "dist": dist,
+            # plane information
+            "linear": result_linear,
+            "rbf": result_rbf,
+            "polyhedral": result_polyhedral,
+        })
 
     return results
 

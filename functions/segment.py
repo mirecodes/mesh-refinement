@@ -10,12 +10,7 @@ from collections import deque
 import os
 
 from functions.estimate import learn_separator_main
-from functions.graphs import (
-    build_adjacency_graph,
-    classify_vertices,
-    build_joints_hop1,
-    cluster_reciprocal_loop_pairs,
-)
+from functions.graphs import cluster_reciprocal_loop_pairs
 
 # --- small helpers to simplify branching & reuse ---
 
@@ -75,7 +70,6 @@ def on_key(event, vmeshes, belongings, prevs, shared, rand_colors, categories_nu
         except Exception:
             pass
         try:
-            import vedo
             vedo.close()  # ensure all windows close
         except Exception:
             pass
@@ -170,7 +164,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
         categories[belongings[i]].append(parts[i-1])
 
     # TODO: remove index of part selection
-    method = 'linear' # fixed to 'linear' so far
+    method = 'all' # fixed to 'linear' so far
     results = {}
 
     # -------- Phase 1: GET SEPARATION PLANES (no visualization here) --------
