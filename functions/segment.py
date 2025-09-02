@@ -10,7 +10,8 @@ from collections import deque
 import os
 
 from functions.estimate import (learn_separator_main, )
-from functions.graphs import (build_adjacency_graph, split_seed_boundary, classify_vertices, build_joints_hop1, )
+from functions.graphs import (build_adjacency_graph, split_seed_boundary, classify_vertices, build_joints_hop1,
+                              cluster_reciprocal_loop_pairs, )
 
 # --- small helpers to simplify branching & reuse ---
 def _is_multi_plane(plane):
@@ -332,10 +333,49 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
 
     # TODO: remove index of part selection
     idx_selected_parts = [1, 2]
+    method = 'linear' # fixed to 'linear' so far
+    results = {}
     svm_results = {}
     calc_results = {}  # store per-part computed artifacts for later visualization
 
-    # -------- Phase 1: CALCULATION (no visualization here) --------
+    # -------- Phase 1: GET SEPARATION PLANES (no visualization here) --------
+    for idx_part in idx_selected_parts:
+        out = learn_separator_main(
+            ms,
+            categories,
+            idx_part,
+            max_hops=10,
+            method=method,
+            C=1.0,
+            gamma='scale',
+            use_signed_dist=True,
+            sdf_thresh=0.0,
+            balance='None'
+        )
+        svm_results[idx_part] = out
+        results[idx_part] = out
+
+    # print(results)
+    results_list = [item for v in results.values() for item in (v if isinstance(v, list) else [v])]
+
+    rlps = cluster_reciprocal_loop_pairs(results_list, w_pos=1.0, w_ang=0.5, cost_max=None)
+
+    vectors = list()
+
+    # Calculate Vectors
+    for i, rlp in enumerate(rlps):
+        center = rlp['center']
+        A = rlp['a']; B = rlp['b']
+        (nA, dA) = A['plane'][0]; (nB, dB) = B['plane'][0]
+        n = np.mean([nA, nB])
+        d = np.mean([dA, dB])
+
+        vectors.append({'center': center, 'n': n, 'd': d})
+
+    print(vectors)
+
+
+
     for idx_part in idx_selected_parts:
         out = learn_separator_main(
             ms,
@@ -350,6 +390,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
             balance='None'
         )
         svm_results[idx_part] = out
+        results[idx_part] = out
 
         plane = out.get('plane', None)
         # local bbox and plane sizing
@@ -390,32 +431,6 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
             center_for_loop=center_for_loop,
             normal=normal_info,
         )
-
-    # -------- Phase 1.5: BUILD JOINTS (before visualization) --------
-    try:
-        # Global labeling once (uses same settings as separator; adjust if needed)
-        vert_label = classify_vertices(
-            verts,
-            categories,
-            use_signed_dist=True,
-            sdf_thresh=0.0,
-        )
-        joint_index = build_joints_hop1(verts, faces, vert_label)
-
-        # Save joints.json alongside states
-        # out_path = getattr(cfgs, 'json_states_dir')
-        # with open(out_path, 'w') as f:
-        #     json.dump(joint_index, f, indent=2)
-        # print(f"[info]: joints saved to {out_path}; #joints={len(joint_index['joints'])}")
-        # for pid, lst in joint_index['part_to_joints'].items():
-        #     if not lst:
-        #         continue
-        #     labels = ', '.join([f"{it['label']}→P{it['other']}({it['joint_id']})" if it['label'] else f"→P{it['other']}({it['joint_id']})" for it in lst])
-        #     print(f"[info]: part {pid}: {labels}")
-    except Exception as e:
-        print(f"[warn]: joint build failed before visualization: {e}")
-
-
 
     # -------- Phase 2: VISUALIZATION (consumes cached results) --------
     for idx_part in idx_selected_parts:

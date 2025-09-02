@@ -1,7 +1,8 @@
 import numpy as np
 import trimesh
-from collections import deque
-from typing import Iterable
+from collections import deque, defaultdict
+from typing import Iterable, List
+
 
 # ---------------------------------------------------------------------
 # Graph utilities
@@ -18,6 +19,7 @@ def build_adjacency_graph(faces: np.ndarray, num_verts: int) -> list[list[int]]:
 # ---------------------------------------------------------------------
 # Labeling
 # ---------------------------------------------------------------------
+
 def classify_vertices(
     verts: np.ndarray,
     categories: list[list[trimesh.Trimesh]],
@@ -25,6 +27,7 @@ def classify_vertices(
     sdf_thresh: float = 0.0,
     batch_size: int = 50000,
 ) -> np.ndarray:
+    # TODO: Improve the classification algorithm
     V = len(verts)
     vert_label = -np.ones(V, dtype=np.int32)
     best_sd = np.full(V, np.inf, dtype=np.float32) if use_signed_dist else None
@@ -119,13 +122,13 @@ def filter_boundary_vertices(adj: list[list[int]], vert_label: np.ndarray, idx_p
 def filter_proximal_vertices(
     adj: list[list[int]],
     vert_label: np.ndarray,
+    seeds: np.ndarray, # loop
     idx_part: int,
     max_hops: int = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     V = len(adj)
     INF = max_hops + 1
     dist = np.full(V, INF, dtype=np.int32)
-    seeds = filter_boundary_vertices(adj, vert_label, idx_part)
     q = deque()
     for s in seeds:
         dist[s] = 0
@@ -142,6 +145,122 @@ def filter_proximal_vertices(
     valid = dist < max_hops
     idxs = np.nonzero(valid)[0]
     return idxs, dist
+
+
+from typing import List
+import numpy as np
+
+from typing import List, Tuple
+import numpy as np
+
+def segregate_loops(adj: List[List[int]], boundary_indices: np.ndarray) -> List[np.ndarray]:
+    """
+    Extract only closed boundary loops.
+    - 경계 그래프에서 차수 < 2인 정점을 반복 제거해 스퍼(branch) 제거 (2-core).
+    - 시작점으로 되돌아오는 경우만 루프로 인정.
+    - 중간 다른 visited 정점에 닿는 경우는 루프로 취급하지 않음.
+    - 결과는 길이 내림차순 정렬 (main loop이 항상 loops[0]).
+    """
+    B = set(map(int, np.asarray(boundary_indices, dtype=int).ravel().tolist()))
+    if not B:
+        return []
+
+    # Build boundary-only neighbor map and undirected edge set (u < v)
+    bneigh = {u: [] for u in B}
+    edges = set()
+    for u in B:
+        for v in adj[u]:
+            if v in B and v != u:
+                bneigh[u].append(v)
+                a, b = (u, v) if u < v else (v, u)
+                edges.add((a, b))
+
+    if not edges:
+        return []
+
+    # ---- 1) Peel to the 2-core: remove vertices with degree < 2 iteratively
+    deg = {u: len(bneigh[u]) for u in B}
+    alive = {u: True for u in B}
+    q = deque([u for u in B if deg[u] < 2])
+
+    while q:
+        u = q.popleft()
+        if not alive[u]:
+            continue
+        alive[u] = False
+        for v in list(bneigh[u]):
+            a, b = (u, v) if u < v else (v, u)
+            edges.discard((a, b))
+            if u in bneigh[v]:
+                bneigh[v].remove(u)
+            deg[v] -= 1
+            if alive[v] and deg[v] == 1:
+                q.append(v)
+        bneigh[u].clear()
+
+    core_vertices = {u for u in B if alive[u]}
+    if not core_vertices or not edges:
+        return []
+
+    # Rebuild adjacency for core edges
+    core_adj = defaultdict(list)
+    for a, b in list(edges):
+        if a in core_vertices and b in core_vertices:
+            core_adj[a].append(b)
+            core_adj[b].append(a)
+        else:
+            edges.discard((a, b))
+
+    if not edges:
+        return []
+
+    def edge_exists(u: int, v: int) -> bool:
+        x, y = (u, v) if u < v else (v, u)
+        return (x, y) in edges
+
+    def discard_edge(u: int, v: int) -> None:
+        x, y = (u, v) if u < v else (v, u)
+        edges.discard((x, y))
+
+    loops: List[np.ndarray] = []
+
+    while edges:
+        a, b = next(iter(edges))
+        path = [a, b]
+        in_path = {a: 0, b: 1}
+        prev, curr = a, b
+
+        while True:
+            nxts = [w for w in core_adj[curr] if w != prev and edge_exists(curr, w)]
+            if not nxts:
+                break
+            nxt = min(nxts)
+
+            if nxt == path[0]:
+                # valid closed loop
+                path.append(nxt)
+                for x, y in zip(path, path[1:]):
+                    discard_edge(x, y)
+                cyc = path[:-1]  # remove duplicate start
+                if len(cyc) >= 3:
+                    loops.append(np.asarray(cyc, dtype=int))
+                break
+
+            if nxt in in_path:
+                # revisiting a different node: not a valid loop
+                break
+
+            in_path[nxt] = len(path)
+            path.append(nxt)
+            prev, curr = curr, nxt
+
+        # consume any used edges in path
+        for x, y in zip(path, path[1:]):
+            discard_edge(x, y)
+
+    loops.sort(key=lambda a: -len(a))
+    return loops
+
 
 # ---------------------------------------------------------------------
 # Separators & splitting
@@ -237,3 +356,121 @@ def build_joints_hop1(verts: np.ndarray, faces: np.ndarray, vert_label: np.ndarr
         'part_to_joints': part_to_joints,
         'connections': connections,
     }
+
+from typing import List, Dict, Tuple
+import numpy as np
+
+def _normalize(v: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(v)
+    return v / (n + 1e-12)
+
+def _build_cost_matrix(A: List[Dict], B: List[Dict], w_pos: float, w_ang: float) -> np.ndarray:
+    m, n = len(A), len(B)
+    C = np.zeros((m, n), dtype=float)
+    for i, a in enumerate(A):
+        ca = np.asarray(a["center"], dtype=float)
+        na = _normalize(np.asarray(a["pca_normal"], dtype=float))
+        for j, b in enumerate(B):
+            cb = np.asarray(b["center"], dtype=float)
+            nb = _normalize(np.asarray(b["pca_normal"], dtype=float))
+            dpos = np.linalg.norm(ca - cb)
+            cos_abs = abs(float(np.dot(na, nb)))
+            dang = 1.0 - cos_abs
+            C[i, j] = w_pos * dpos + w_ang * dang
+    return C
+
+def _hungarian_or_greedy(C: np.ndarray) -> List[Tuple[int, int]]:
+    """Try SciPy Hungarian; fallback to simple greedy (deterministic)."""
+    try:
+        from scipy.optimize import linear_sum_assignment
+        r, c = linear_sum_assignment(C)
+        return list(zip(r.tolist(), c.tolist()))
+    except Exception:
+        # Greedy: repeatedly pick the smallest remaining entry
+        m, n = C.shape
+        pairs = []
+        used_r = set(); used_c = set()
+        # flatten with indices
+        flat = [(C[i, j], i, j) for i in range(m) for j in range(n)]
+        flat.sort(key=lambda t: t[0])
+        for _, i, j in flat:
+            if i in used_r or j in used_c:
+                continue
+            pairs.append((i, j))
+            used_r.add(i); used_c.add(j)
+            if len(used_r) == min(m, n):
+                break
+        return pairs
+
+def cluster_reciprocal_loop_pairs(
+    results: List[Dict],
+    *,
+    w_pos: float = 1.0,
+    w_ang: float = 0.5,
+    cost_max: float | None = None,  # 매칭 허용 상한(선택)
+) -> List[Dict]:
+    """
+    results: learn_separator_main per-loop 결과 리스트.
+      각 원소는 최소한 아래 키를 가짐:
+        - 'parent': int, 'child': int
+        - 'center': (3,), 'pca_normal': (3,)
+        - (원하면 'loop' 등 원본 식별자를 그대로 유지)
+    반환: RLP(상호 루프쌍) 리스트. 각 항목 구조:
+      {
+        'parts': (i, j),                     # 정렬된 파트쌍 (min, max)
+        'a': a_dict, 'b': b_dict,            # 대응된 원본 루프(방향 i->j, j->i)
+        'center': (3,),                      # 평균 center
+        'normal': (3,),                      # 방향 정합 후 평균 정규화
+        'cost': float,                       # 매칭 비용
+      }
+    """
+    # 1) 파트쌍 단위로 그룹핑 (무순서 쌍)
+    buckets: Dict[Tuple[int, int], Dict[str, List[Dict]]] = {}
+    for it in results:
+        p, q = int(it["parent"]), int(it["child"])
+        if p == q:
+            # 자기-루프는 건너뜀
+            continue
+        key = (p, q) if p < q else (q, p)
+        dir_key = "A" if (p < q) else "B"   # A: p->q (작은->큰), B: q->p (큰->작은)
+        if key not in buckets:
+            buckets[key] = {"A": [], "B": []}
+        buckets[key][dir_key].append(it)
+
+    RLPs: List[Dict] = []
+
+    # 2) 각 파트쌍마다 최소 비용 매칭
+    for (i, j), grp in buckets.items():
+        A = grp["A"]  # i->j
+        B = grp["B"]  # j->i
+        if not A or not B:
+            continue  # 한쪽 방향만 있으면 매칭 불가
+        C = _build_cost_matrix(A, B, w_pos=w_pos, w_ang=w_ang)
+        pairs = _hungarian_or_greedy(C)
+
+        # 3) 페어 생성 (코스트 상한 필터)
+        for ia, ib in pairs:
+            cost = float(C[ia, ib])
+            if (cost_max is not None) and (cost > cost_max):
+                continue
+            a = A[ia]; b = B[ib]
+            ca = np.asarray(a["center"], dtype=float)
+            cb = np.asarray(b["center"], dtype=float)
+            na = _normalize(np.asarray(a["pca_normal"], dtype=float))
+            nb = _normalize(np.asarray(b["pca_normal"], dtype=float))
+            # normal 방향 정합
+            if float(np.dot(na, nb)) < 0.0:
+                nb = -nb
+            n_pair = _normalize(na + nb) if np.linalg.norm(na + nb) > 1e-9 else na
+            c_pair = 0.5 * (ca + cb)
+            RLPs.append({
+                "parts": (i, j),
+                "a": a, "b": b,
+                "center": c_pair,
+                "normal": n_pair,
+                "cost": cost,
+            })
+
+    # 4) 정렬(코스트 오름차순) 또는 길이 등 다른 기준도 가능
+    RLPs.sort(key=lambda d: d["cost"])
+    return RLPs

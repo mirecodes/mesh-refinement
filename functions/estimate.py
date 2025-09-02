@@ -1,3 +1,5 @@
+from typing import TypedDict
+
 import numpy as np
 import pymeshlab
 import trimesh
@@ -5,7 +7,8 @@ from collections import deque
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC, SVC
 
-from functions.graphs import build_adjacency_graph, classify_vertices, filter_proximal_vertices
+from functions.graphs import build_adjacency_graph, classify_vertices, filter_proximal_vertices, \
+    filter_boundary_vertices, segregate_loops
 
 
 # -----------------------------------------------------------------------------
@@ -171,7 +174,7 @@ def learn_separator_main(
     sdf_thresh: float = 0.0,
     balance: str = "downsample",      # 'downsample' | 'weights' | 'none'
     random_state: int | None = 0,
-) -> dict:
+) -> list[TypedDict]:
     """End-to-end learning of a separating boundary for a selected part.
 
     Returns dict with keys: 'clf', 'scaler', 'method', 'plane', 'idx_pos',
@@ -199,57 +202,221 @@ def learn_separator_main(
     if len(idx_seeds) == 0:
         raise RuntimeError("[error]: Target part has no included vertices. Check watertight/SDF settings.")
 
-    # (4) Neighborhood (hop < K)
-    idx_neighbor, dist = filter_proximal_vertices(adj, vert_label, idx_part, max_hops)
+    # (4) Get boundaries
+    boundary_indices = filter_boundary_vertices(adj, vert_label, idx_part)
+    loops = segregate_loops(adj, boundary_indices)
 
-    # (5) Positive/negative split
-    neighbor_label = vert_label[idx_neighbor]
-    idx_pos = idx_neighbor[neighbor_label == idx_part]
-    idx_neg = idx_neighbor[(neighbor_label > 0) & (neighbor_label != idx_part)]
-    if len(idx_pos) == 0 or len(idx_neg) == 0:
-        raise RuntimeError("[error]: Not enough positives/negatives in the neighborhood for SVM learning.")
+    # loops: segregate_loops(adj, boundary_indices)의 결과 (List[np.ndarray])
+    # visualize_boundary_loops(
+    #     ms, categories, idx_part, loops,
+    #     show_original_mesh=True,  # 원본 메쉬 켜기
+    #     tube_radius=0.001,
+    #     sphere_radius=0.004,
+    #     background="white",
+    # )
 
-    # (6) Train: polyhedral / single-plane or kernel SVM
-    if method == "polyhedral":
-        poly = train_polyhedral_planes(verts, idx_pos, idx_neg, K=2, C=C, random_state=random_state)
-        return {
-            "clf": None,
-            "scaler": poly["scaler"],
-            "method": method,
-            "plane": poly["planes"],
-            "idx_pos": np.unique(idx_pos),
-            "idx_neg": np.unique(idx_neg),
-            "idx_neighbor": idx_neighbor,
-            "dist": dist,
-        }
 
-    clf, scaler = train_boundary_svm(
-        verts, idx_pos, idx_neg,
-        method=method, C=C, gamma=gamma, balance=balance, random_state=random_state
-    )
+    results = list()
 
-    # (7) Recover plane(s)
-    plane = []
-    if method == "linear":
-        w_s = clf.coef_.ravel()
-        b_s = clf.intercept_[0]
-        w = w_s / scaler.scale_
-        b = b_s - np.dot(w, scaler.mean_)
-        norm = np.linalg.norm(w) + 1e-12
-        n = w / norm
-        d = b / norm
-        plane = [(n, d)]
-    elif method == "rbf":
-        # Kernel SVM has no single separating plane
-        plane = []
+    for order, loop in enumerate(loops):
+        # (4) Neighborhood (hop < K)
+        idx_neighbor, dist = filter_proximal_vertices(adj, vert_label, loop, idx_part, max_hops)
 
-    return {
-        "clf": clf,
-        "scaler": scaler,
-        "method": method,
-        "plane": plane,
-        "idx_pos": np.unique(idx_pos),
-        "idx_neg": np.unique(idx_neg),
-        "idx_neighbor": idx_neighbor,
-        "dist": dist,
-    }
+        # (5) Positive/negative split
+        neighbor_label = vert_label[idx_neighbor]
+        idx_pos = idx_neighbor[neighbor_label == idx_part]
+        idx_neg = idx_neighbor[(neighbor_label > 0) & (neighbor_label != idx_part)]
+
+        # find the most frequent contact neighbor
+        idx_nbr_dist1, dist1 = filter_proximal_vertices(adj, vert_label, loop, idx_part, 2)
+
+        prox_nbr_label = vert_label[idx_nbr_dist1]
+        idx_prox_nbr = idx_nbr_dist1[(prox_nbr_label > 0) & (prox_nbr_label != idx_part)]
+        values, counts = np.unique(vert_label[idx_prox_nbr], return_counts=True)
+        freq_prox_nbr = values[np.argmax(counts)]
+
+        # PCA plane normal of the loop points (smallest singular vector)
+        loop_idx = np.asarray(loop, dtype=int).ravel()
+        pts_loop = verts[loop_idx]
+        ctr_loop = pts_loop.mean(axis=0)
+        X = pts_loop - ctr_loop
+        try:
+            _, Svals, Vt = np.linalg.svd(X, full_matrices=False)
+            n_pca = Vt[-1]
+        except np.linalg.LinAlgError:
+            # fallback: covariance eigendecomposition
+            C = (X.T @ X) / max(len(X) - 1, 1)
+            eigvals, eigvecs = np.linalg.eigh(C)
+            n_pca = eigvecs[:, np.argmin(eigvals)]
+        n_pca = n_pca / (np.linalg.norm(n_pca) + 1e-12)
+        pca_normal = n_pca
+
+        # find the loop center
+        loop_idx = np.asarray(loop, dtype=int)
+        if loop_idx.size == 0:
+            raise RuntimeError("[error]: Empty loop indices.")
+        center = verts[loop_idx].mean(axis=0)
+
+        if len(idx_pos) == 0 or len(idx_neg) == 0:
+            raise RuntimeError("[error]: Not enough positives/negatives in the neighborhood for SVM learning.")
+
+        # (6) Train: polyhedral / single-plane or kernel SVM
+        if method == "polyhedral":
+            poly = train_polyhedral_planes(verts, idx_pos, idx_neg, K=2, C=C, random_state=random_state)
+            results.append( {
+                "loop": loop,
+                "center": center,
+                "pca_normal": pca_normal,
+                "clf": None,
+                "scaler": poly["scaler"],
+                "method": method,
+                "plane": poly["planes"],
+                "parent": idx_part,
+                "child": freq_prox_nbr,
+                "idx_pos": np.unique(idx_pos),
+                "idx_neg": np.unique(idx_neg),
+                "idx_neighbor": idx_neighbor,
+                "dist": dist,
+            })
+        elif method in ("linear", "rbf"):
+            clf, scaler = train_boundary_svm(
+                verts, idx_pos, idx_neg,
+                method=method, C=C, gamma=gamma, balance=balance, random_state=random_state
+            )
+
+            plane = []
+            if method == "linear":
+                w_s = clf.coef_.ravel()
+                b_s = clf.intercept_[0]
+                w = w_s / scaler.scale_
+                b = b_s - np.dot(w, scaler.mean_)
+                norm = np.linalg.norm(w) + 1e-12
+                n = w / norm
+                d = b / norm
+                plane = [(n, d)]
+
+            results.append( {
+                "loop": loop,
+                "center": center,
+                "pca_normal": pca_normal,
+                "clf": clf,
+                "scaler": scaler,
+                "method": method,
+                "plane": plane,
+                "parent": idx_part,
+                "child": freq_prox_nbr,
+                "idx_pos": np.unique(idx_pos),
+                "idx_neg": np.unique(idx_neg),
+                "idx_neighbor": idx_neighbor,
+                "dist": dist,
+            })
+        else:
+            raise ValueError("[error]: Unknown method '%s'" % method)
+
+    return results
+
+
+# TODO: remove temporal functions
+# --- Visualization of boundary loops over mesh (vedo) ---
+import numpy as np
+import vedo
+
+def _trimesh_list_to_vedo_mesh(parts: list[trimesh.Trimesh]) -> vedo.Mesh | None:
+    """Convert list of trimesh.Trimesh into a single vedo.Mesh (or None if empty)."""
+    if not parts:
+        return None
+    v_all = []
+    f_all = []
+    off = 0
+    for tm in parts:
+        v = np.asarray(tm.vertices, dtype=float)
+        f = np.asarray(tm.faces, dtype=int)
+        v_all.append(v)
+        f_all.append(f + off)
+        off += v.shape[0]
+    V = np.vstack(v_all)
+    F = np.vstack(f_all)
+    return vedo.Mesh([V, F])
+
+def visualize_boundary_loops(
+    ms: pymeshlab.MeshSet,
+    categories: list[list[trimesh.Trimesh]],
+    idx_part: int,
+    loops: list[np.ndarray],
+    *,
+    show_original_mesh: bool = True,    # True면 원본 메쉬도 표시
+    tube_radius: float = 0.4,           # 루프 튜브 반지름
+    sphere_radius: float = 0.8,         # 루프 중심 표시 구 반지름
+    background: str = "white",
+):
+    """
+    Visualize boundary loops together with either the original mesh and/or the target part.
+    - `loops` : list of arrays of vertex indices (dtype=int)
+    """
+    # 0) get original mesh vertices/faces from MeshSet(0)
+    ms.set_current_mesh(0)
+    verts = ms.current_mesh().vertex_matrix()
+    faces = ms.current_mesh().face_matrix().astype(np.int64)
+
+    # 1) actors container
+    actors = []
+
+    # 2) original mesh (semi-transparent)
+    if show_original_mesh:
+        m_orig = vedo.Mesh([verts, faces]).c("lightgray").alpha(0.25)
+        m_orig.lighting("plastic")
+        actors.append(m_orig)
+
+    # 3) selected part from categories[idx_part]
+    vpart = _trimesh_list_to_vedo_mesh(categories[idx_part])
+    if vpart is not None:
+        vpart.c("dodgerblue").alpha(0.35).lw(0.5).lighting("plastic")
+        actors.append(vpart)
+
+    # 4) draw loops
+    cmap = vedo.color_map(range(len(loops)), "Set1")  # distinct colors
+    for i, loop in enumerate(loops):
+        loop = np.asarray(loop, dtype=int).ravel()
+        if loop.size == 0:
+            continue
+
+        # 좌표 시퀀스
+        pts = verts[loop]
+
+        # 루프가 닫혀 있는지(첫/끝 이웃 여부) 판단
+        closed = (loop.size >= 3 and (loop[0] == loop[-1] or loop[0] in set(adjacent for adjacent in [])))
+        # 위 closed 여부는 보수적으로 False로 두고, 실제로는 open/closed 모두 그리되,
+        # 닫힌 형태로 보고 싶으면 다음 한 줄로 덮어써도 됩니다:
+        # closed = (loop.size >= 3 and loop[0] == loop[-1])
+
+        # vedo.Line으로 경계 곡선을 만들고 튜브화
+        line = vedo.Line(pts, closed=False).c(cmap[i]).lw(2)
+        # Some vedo versions expose Line.tube(...), not .tubes(...)
+        if hasattr(line, "tube") and callable(getattr(line, "tube")):
+            try:
+                tube = line.tube(radius=tube_radius).c(cmap[i])
+            except TypeError:
+                # Fallback for signatures like tube(r=...)
+                tube = line.tube(tube_radius).c(cmap[i])
+        else:
+            # Final fallback: build a Tube actor from points directly
+            tube = vedo.Tube(pts, r=tube_radius, cap=True).c(cmap[i])
+        actors.append(tube)
+
+        # 루프 중심 표시
+        center = pts.mean(axis=0)
+        s = vedo.Sphere(pos=center, r=sphere_radius, res=16).c(cmap[i]).alpha(1.0)
+
+    # 5) axes (version-safe) & show
+    plt = vedo.Plotter(bg=background, title="Boundary loops")
+    _axes_target = m_orig if show_original_mesh else (vpart or vedo.Mesh([verts, faces]))
+    try:
+        axes_actor = vedo.Axes(_axes_target, axesType=4, xyGrid=True)
+    except TypeError:
+        try:
+            # Some vedo versions don't accept axesType
+            axes_actor = vedo.Axes(_axes_target, xyGrid=True)
+        except TypeError:
+            # Fallback minimal Axes
+            axes_actor = vedo.Axes(_axes_target)
+    plt.show(actors + [axes_actor], viewup="z").close()
