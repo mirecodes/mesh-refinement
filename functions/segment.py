@@ -246,6 +246,7 @@ def on_right_click(event, vmeshes, belongings, prevs, shared, rand_colors, plt):
         recolor_parts(vmeshes, belongings, mode, rand_colors)
         plt.render()
 
+
 def on_tab(event, vmeshes, belongings, prevs, shared, categories_num, rand_colors, plt):
     if event.keypress in ('\t', 'Tab'):
         shared['mode'] = (shared['mode']+1) % (categories_num+1)
@@ -256,6 +257,25 @@ def on_tab(event, vmeshes, belongings, prevs, shared, categories_num, rand_color
             print(f"[info]: defualt mode")
         else:
             print(f"[info]: selection mode #{mode}")
+
+# --- KeyPress dispatcher: ESC/q to exit; Tab cycles selection ---
+def on_key(event, vmeshes, belongings, prevs, shared, rand_colors, categories_num, plt):
+    """KeyPress dispatcher: ESC/q to exit; Tab cycles selection."""
+    k = getattr(event, "keypress", None)
+    if k in ("q", "Q", "Esc", "Escape", "\x1b"):
+        try:
+            plt.close()
+        except Exception:
+            pass
+        try:
+            import vedo
+            vedo.close()  # ensure all windows close
+        except Exception:
+            pass
+        return
+    # keep your Tab behavior
+    if k in ('\t', 'Tab'):
+        on_tab(event, vmeshes, belongings, prevs, shared, categories_num, rand_colors, plt)
 
 
 def stage_segment(cfgs, ms: pymeshlab.MeshSet):
@@ -280,7 +300,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     ms.set_current_mesh(0)
     current_mesh = ms.current_mesh()
     verts = current_mesh.vertex_matrix()
-    faces = current_mesh.face_matrix()
+    faces = current_mesh.face_matrix().astype(np.int64)
 
     vmesh = vedo.Mesh([verts, faces])
     vmeshes.append(vmesh)
@@ -303,6 +323,17 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     # Compose GUI
     plt = vedo.Plotter(title="Part selection")
 
+    # --- Disable vedo's built-in keyboard shortcuts (KeyPress/Release/Char) ---
+    try:
+        iren = plt.interactor  # vtkRenderWindowInteractor
+        for _ev in ("KeyPressEvent", "KeyReleaseEvent", "CharEvent"):
+            try:
+                iren.RemoveObservers(_ev)
+            except Exception:
+                pass
+    except Exception as _e:
+        print("[warn] Could not remove default keyboard observers:", _e)
+
     # partial 로 인자 고정
     cb_left = partial(
         on_left_click,
@@ -314,15 +345,15 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
         vmeshes=vmeshes, belongings=belongings, prevs=prevs,
         shared=shared, rand_colors=rand_colors, plt=plt,
     )
-    cb_key = partial(
-        on_tab,
+    cb_key_dispatch = partial(
+        on_key,
         vmeshes=vmeshes, belongings=belongings, prevs=prevs,
         shared=shared, rand_colors=rand_colors, categories_num=categories_num, plt=plt,
     )
 
     plt.add_callback("LeftButtonPress", cb_left)
     plt.add_callback("RightButtonPress", cb_right)
-    plt.add_callback("KeyPress",         cb_key)
+    plt.add_callback("KeyPress", cb_key_dispatch)
 
     recolor_parts(vmeshes, belongings, 0, rand_colors)
     plt.show(vmeshes, interactive=True)
@@ -366,120 +397,74 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     for i, rlp in enumerate(rlps):
         center = rlp['center']
         A = rlp['a']; B = rlp['b']
-        (nA, dA) = A['plane'][0]; (nB, dB) = B['plane'][0]
-        n = np.mean([nA, nB])
-        d = np.mean([dA, dB])
+        # Extract normals; fall back to PCA normals if plane not available
+        if A.get('plane') and len(A['plane']) > 0 and B.get('plane') and len(B['plane']) > 0:
+            nA = np.asarray(A['plane'][0][0], dtype=float)
+            nB = np.asarray(B['plane'][0][0], dtype=float)
+            dA = float(A['plane'][0][1]); dB = float(B['plane'][0][1])
+        else:
+            nA = np.asarray(A['pca_normal'], dtype=float)
+            nB = np.asarray(B['pca_normal'], dtype=float)
+            dA = dB = 0.0
+        # Align directions before averaging
+        if float(np.dot(nA, nB)) < 0.0:
+            nB = -nB
+        n = np.mean(np.vstack([nA, nB]), axis=0)
+        n = n / (np.linalg.norm(n) + 1e-12)
+        d = 0.5 * (dA + dB)
 
         vectors.append({'center': center, 'n': n, 'd': d})
 
     print(vectors)
 
 
+    # -------- Phase 2: VISUALIZATION (per RLP) --------
+    # For each reciprocal loop pair: draw base mesh, two connected parts with different colors, and vectors[i]
+    for i, rlp in enumerate(rlps):
+        # base mesh
+        mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.35).lw(0)
 
-    for idx_part in idx_selected_parts:
-        out = learn_separator_main(
-            ms,
-            categories,
-            idx_part,
-            max_hops=10,
-            method='linear',
-            C=1.0,
-            gamma='scale',
-            use_signed_dist=True,
-            sdf_thresh=0.0,
-            balance='None'
-        )
-        svm_results[idx_part] = out
-        results[idx_part] = out
+        # two parts (parent/child) in distinct colors
+        p_idx = int(rlp["a"]["parent"])
+        q_idx = int(rlp["a"]["child"])
+        # safety: ensure indices are valid and distinct
+        part_ids = [pid for pid in (p_idx, q_idx) if pid != 0 and 1 <= pid <= len(parts)]
+        part_ids = list(dict.fromkeys(part_ids))  # unique, keep order
 
-        plane = out.get('plane', None)
-        # local bbox and plane sizing
-        bbox_local = _bbox_for_parts(categories[idx_part], pad_ratio=0.05)
-        if bbox_local is not None:
-            bb_min_local, bb_max_local = bbox_local
-        else:
-            bb_min_local, bb_max_local = verts.min(axis=0), verts.max(axis=0)
-        local_center = 0.5 * (bb_min_local + bb_max_local)
-        local_diag = float(np.linalg.norm(bb_max_local - bb_min_local))
-        plane_size_local = max(local_diag, 1e-8) * 1.25
+        part_colors = [(0.85, 0.2, 0.2), (0.2, 0.4, 0.85)]
+        part_actors = []
+        for j, pid in enumerate(part_ids):
+            for tri in categories[pid]:
+                actor = vedo.Mesh([tri.vertices, tri.faces]).c(part_colors[min(j, 1)]).alpha(0.25).lw(0)
+                part_actors.append(actor)
 
-        separator_for_boundary, center_for_loop = _prepare_separator_and_center(plane, out, verts, local_center)
-
-        if out.get('method', None) == 'linear':
-            # Use the first plane (n0, d0). Visualize a normal starting at local_center along +n0.
-            if _is_multi_plane(plane):
-                n0, d0 = plane[0]
-            else:
-                n0, d0 = plane
-            n0 = np.asarray(n0, dtype=float)
-            n0 /= (np.linalg.norm(n0) + 1e-12)
-            # Start at local_center and go in +n0 direction
-            p0 = np.asarray(local_center, dtype=float)
-            seg_len = float(plane_size_local) * 0.5
-            p1 = p0 + seg_len * n0
-            normal_info = {"p0": p0, "p1": p1}
-        else:
-            normal_info = None
-
-        # persist everything needed for visualization
-        calc_results[idx_part] = dict(
-            out=out,
-            plane=plane,
-            local_center=local_center,
-            plane_size=plane_size_local,
-            separator=separator_for_boundary,
-            center_for_loop=center_for_loop,
-            normal=normal_info,
-        )
-
-    # -------- Phase 2: VISUALIZATION (consumes cached results) --------
-    for idx_part in idx_selected_parts:
-        res = calc_results[idx_part]
-        out = res["out"]
-        plane = res["plane"]
-        local_center = res["local_center"]
-        plane_size_local = res["plane_size"]
-        separator_for_boundary = res["separator"]
-        center_for_loop = res["center_for_loop"]
-        normal_info = res.get("normal", None)
-
-        # context actors
-        mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.25)
-        part_actors = [vedo.Mesh([pm.vertices, pm.faces]).c("red").alpha(0.75) for pm in categories[idx_part]]
-
-        if not plane:
-            print(f"[info]: part #{idx_part}: non-linear SVM → rendering isosurface (f(x)=0)")
-            bbox = _bbox_for_parts(categories[idx_part], pad_ratio=0.02)
-            boundary_actor = _make_boundary_lines(verts, faces, separator_for_boundary, idx_part, color="cyan", lw=3)
-            if boundary_actor is not None:
-                vedo.show([mesh_actor, boundary_actor], f"Boundary edges for part #{idx_part}", axes=1, interactive=False)
-            show_svm_isosurface(out["clf"], out["scaler"], verts, faces,
-                                title=f"SVM surface for part #{idx_part}", grid=64, bbox=bbox)
-        else:
-            plane_actor_fn = partial(
-                make_plane_actor,
-                verts=verts,
-                out=out,
-                fallback_center=local_center,
-                plane_size=plane_size_local,
-            )
-            plane_actors = _make_plane_actors(plane, plane_actor_fn)
-
-            # boundary edge overlay using chosen separator
-            boundary_actor = _make_boundary_lines(verts, faces, separator_for_boundary, idx_part, plane_center=center_for_loop, color="cyan", lw=3)
-            extra_actors = [boundary_actor] if boundary_actor is not None else []
-
-            # Visualize the normal (arrow) from local_center along +n0
-            if normal_info is not None:
+        # corresponding vector (center + direction) for this RLP, if available
+        vec_actor = None
+        if i < len(vectors):
+            v = vectors[i]
+            c = np.asarray(v["center"], dtype=float)
+            n = np.asarray(v["n"], dtype=float)
+            if n.ndim == 0:
+                # in case n is a scalar by mistake, skip arrow
+                n = None
+            if n is not None:
+                n = n / (np.linalg.norm(n) + 1e-12)
+                seg_len = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))) * 0.2
+                p0 = c
+                p1 = c + seg_len * n
                 try:
-                    normal_actor = vedo.Arrow(normal_info["p0"], normal_info["p1"]).c("orange").lw(2).alpha(1.0)
+                    vec_actor = vedo.Arrow(p0, p1).c("orange").lw(0).alpha(1.0)
                 except TypeError:
-                    normal_actor = vedo.Line(normal_info["p0"], normal_info["p1"]).c("orange").lw(3).alpha(1.0)
-                extra_actors.append(normal_actor)
+                    vec_actor = vedo.Line(p0, p1).c("orange").lw(0).alpha(1.0)
 
-            vedo.show(
-                [mesh_actor, *part_actors, *plane_actors, *extra_actors],
-                f"SVM plane(s) for part #{idx_part}",
-                axes=1,
-                interactive=True
-            )
+        show_actors = [mesh_actor, *part_actors]
+        if vec_actor is not None:
+            show_actors.append(vec_actor)
+
+        vedo.settings.use_depth_peeling = True
+        vedo.show(
+            show_actors,
+            f"RLP #{i}: parts {p_idx} ↔ {q_idx}",
+            axes=1,
+            interactive=True
+        )
