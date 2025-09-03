@@ -424,6 +424,7 @@ def learn_separator_main(
             "center": center,
             "pca_normal": pca_normal,
             # division backgrounds
+            "vert_label": vert_label,
             "idx_pos": np.unique(idx_pos),
             "idx_neg": np.unique(idx_neg),
             "idx_neighbor": idx_neighbor,

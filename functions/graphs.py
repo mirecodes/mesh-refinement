@@ -26,6 +26,7 @@ def classify_vertices(
     use_signed_dist: bool = True,
     sdf_thresh: float = 0.0,
     batch_size: int = 50000,
+    k_vote: int = 3,                      # <- 추가: 최근접 이웃 개수
 ) -> np.ndarray:
     # TODO: Improve the classification algorithm
     V = len(verts)
@@ -84,7 +85,94 @@ def classify_vertices(
                     upd = inside & free
                     if np.any(upd):
                         vert_label[take[upd]] = cid
-    return vert_label
+
+    # ------------------------------
+    # (NEW) 최근접 k개 라벨-정점 투표 보정
+    # ------------------------------
+    unlabeled = np.where(vert_label == -1)[0]
+    if unlabeled.size == 0:
+        return vert_label
+
+    labeled = np.where(vert_label >= 0)[0]
+    if labeled.size == 0:
+        # 라벨 있는 정점이 전혀 없으면 보정 불가
+        return vert_label
+
+    k = int(min(k_vote, labeled.size))
+
+    def vote_assign(u_idx: np.ndarray, nn_idx: np.ndarray, nn_dist: np.ndarray) -> np.ndarray:
+        """
+        u_idx: (M,) 미분류 정점 인덱스
+        nn_idx: (M,k) labeled 배열 내 인덱스(로컬 인덱스)
+        nn_dist: (M,k) 거리
+        반환: (M,) 할당 라벨
+        """
+        # 로컬 인덱스를 글로벌 정점 인덱스로 변환
+        neigh_global = labeled[nn_idx]             # (M,k)
+        neigh_labels = vert_label[neigh_global]    # (M,k)
+        out = np.full(u_idx.shape[0], -1, dtype=np.int32)
+
+        for m in range(u_idx.shape[0]):
+            labs = neigh_labels[m]
+            dists = nn_dist[m]
+            # 다수결
+            vals, cnts = np.unique(labs, return_counts=True)
+            # 최빈도 후보들
+            maxc = np.max(cnts)
+            cand = vals[cnts == maxc]
+            if cand.size == 1:
+                out[m] = int(cand[0])
+            else:
+                # 동표면 후보들 중 거리 합이 최소인 라벨 선택
+                best_lab = None
+                best_sum = np.inf
+                for L in cand:
+                    s = float(np.sum(dists[labs == L]))
+                    if s < best_sum:
+                        best_sum = s
+                        best_lab = int(L)
+                out[m] = best_lab if best_lab is not None else int(cand[0])
+        return out
+
+    # 우선 SciPy KDTree 시도
+    try:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(verts[labeled])
+        # query 결과가 k==1이면 1D, 그 외 2D → 2D로 통일
+        dists, idxs = tree.query(verts[unlabeled], k=k, workers=-1)
+        if k == 1:
+            dists = dists[:, None]
+            idxs = idxs[:, None]
+        assign = vote_assign(unlabeled, idxs, dists)
+        vert_label[unlabeled] = assign
+        return vert_label
+    except Exception:
+        # SciPy가 없거나 실패하면 배치 브루트포스(메모리 안전)
+        B = 8192  # 배치 크기
+        for s in range(0, unlabeled.size, B):
+            take = unlabeled[s:s+B]
+            U = verts[take]                  # (b,3)
+            L = verts[labeled]              # (L,3)
+            # 거리 제곱 (메모리 고려해 배치로 충분히 작게)
+            # b x L 행렬에서 각 행마다 k개 최솟값의 인덱스를 얻는다
+            # numpy.argpartition 사용
+            # (b, L) 거리 계산
+            # (U - L)^2 = |U|^2 + |L|^2 - 2 U·L
+            UU = np.sum(U*U, axis=1, keepdims=True)         # (b,1)
+            LL = np.sum(L*L, axis=1, keepdims=True).T       # (1,L)
+            d2 = UU + LL - 2.0 * (U @ L.T)                  # (b,L)
+            # k개 이웃의 로컬 인덱스
+            part = np.argpartition(d2, kth=k-1, axis=1)[:, :k]  # (b,k) 순서는 정렬X
+            # 해당 거리 추출 후 정렬
+            row_idx = np.arange(part.shape[0])[:, None]
+            dsel = d2[row_idx, part]
+            order = np.argsort(dsel, axis=1)
+            nn_idx = part[row_idx, order]                    # (b,k)
+            nn_d2  = dsel[row_idx, order]
+            assign = vote_assign(take, nn_idx, np.sqrt(np.maximum(nn_d2, 0.0)))
+            vert_label[take] = assign
+
+        return vert_label
 
 # ---------------------------------------------------------------------
 # Neighborhood & boundary helpers
