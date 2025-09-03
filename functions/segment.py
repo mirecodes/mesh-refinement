@@ -112,6 +112,188 @@ def build_joints_from_rlps(rlps: list[dict]) -> list[dict]:
     return joints
 
 
+# --- loop-based dense sampling helpers -------------------------------------------------
+
+def _orthonormal_basis_from_normal(n: np.ndarray):
+    n = np.asarray(n, dtype=float).ravel()
+    n /= (np.linalg.norm(n) + 1e-12)
+    axes = np.eye(3)
+    k = int(np.argmin(np.abs(axes @ n)))
+    u = np.cross(n, axes[k]); u /= (np.linalg.norm(u) + 1e-12)
+    v = np.cross(n, u); v /= (np.linalg.norm(v) + 1e-12)
+    return u, v, n
+
+
+def _pca_plane(points: np.ndarray):
+    pts = np.asarray(points, dtype=float)
+    c = pts.mean(axis=0)
+    X = pts - c
+    C = X.T @ X
+    w, V = np.linalg.eigh(C)
+    n = V[:, 0]
+    n /= (np.linalg.norm(n) + 1e-12)
+    return c, n
+
+
+def _points_in_polygon_2d(poly_xy: np.ndarray, grid_xy: np.ndarray) -> np.ndarray:
+    """Ray casting: return boolean mask for grid points inside polygon.
+    poly_xy must be closed or open (will be treated as closed by wrap)."""
+    x = grid_xy[:, 0]; y = grid_xy[:, 1]
+    xp = poly_xy[:, 0]; yp = poly_xy[:, 1]
+    n = len(poly_xy)
+    inside = np.zeros(len(grid_xy), dtype=bool)
+    j = n - 1
+    for i in range(n):
+        xi, yi = xp[i], yp[i]
+        xj, yj = xp[j], yp[j]
+        cond = ((yi > y) != (yj > y)) & (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi)
+        inside ^= cond
+        j = i
+    return inside
+
+
+def _nearest_segment_projection(P: np.ndarray, A: np.ndarray, B: np.ndarray):
+    """Project 2D points P onto 2D segments A->B; return (proj, t, d2).
+    Vectorized for one segment AB. P:(M,2) A:(2,) B:(2,)"""
+    AB = B - A
+    denom = (AB[0] * AB[0] + AB[1] * AB[1]) + 1e-12
+    t = ((P[:, 0] - A[0]) * AB[0] + (P[:, 1] - A[1]) * AB[1]) / denom
+    t = np.clip(t, 0.0, 1.0)
+    proj = A[None, :] + t[:, None] * AB[None, :]
+    d2 = (P[:, 0] - proj[:, 0]) ** 2 + (P[:, 1] - proj[:, 1]) ** 2
+    return proj, t, d2
+
+
+def _boundary_distance_and_height(grid_xy: np.ndarray, poly_uv: np.ndarray, h_loop: np.ndarray):
+    """For each grid point compute distance to polyline and interpolated boundary height.
+    poly_uv: (L,2) closed polygon (first==last allowed, handled).
+    h_loop:  (L,) heights at polygon vertices (first==last height allowed).
+    Returns dist (M,), hb (M,)"""
+    if poly_uv.shape[0] >= 2 and not np.allclose(poly_uv[0], poly_uv[-1]):
+        poly_uv = np.vstack([poly_uv, poly_uv[0]])
+        h_loop = np.concatenate([h_loop, h_loop[0:1]])
+    M = grid_xy.shape[0]
+    dist2 = np.full(M, np.inf, dtype=float)
+    hb = np.zeros(M, dtype=float)
+    for i in range(len(poly_uv) - 1):
+        A = poly_uv[i]
+        B = poly_uv[i + 1]
+        proj, t, d2 = _nearest_segment_projection(grid_xy, A, B)
+        upd = d2 < dist2
+        if np.any(upd):
+            dist2[upd] = d2[upd]
+            hb[upd] = (1.0 - t[upd]) * h_loop[i] + t[upd] * h_loop[i + 1]
+    return np.sqrt(dist2), hb
+
+
+def sample_dense_points_on_loop_surface(loop_xyz: np.ndarray,
+                                         *,
+                                         step: float | None = None,
+                                         step_rel: float = 0.01,
+                                         k_avg: int = 4,
+                                         max_iters: int | None = None) -> np.ndarray:
+    """Sample dense points inside a loop and reconstruct Z(height) by propagating from the boundary.
+    - Project loop to PCA plane; fill polygon on a regular grid (spacing `step`).
+    - Boundary ring uses interpolated boundary height directly.
+    - Interior grows inward: each cell takes the mean of already-known 4-neighbors.
+    Returns (N,3) reconstructed 3D points.
+    """
+    loop_xyz = np.asarray(loop_xyz, dtype=float)
+    if loop_xyz.shape[0] < 3:
+        return np.zeros((0, 3), dtype=float)
+
+    # PCA plane and basis
+    c, n = _pca_plane(loop_xyz)
+    u, v, n = _orthonormal_basis_from_normal(n)
+
+    # project loop to 2D
+    rel = loop_xyz - c
+    poly_uv = np.column_stack([rel @ u, rel @ v])
+    # close if needed (helpers handle either, but bbox needs all points)
+    if not np.allclose(poly_uv[0], poly_uv[-1]):
+        poly_closed = np.vstack([poly_uv, poly_uv[0]])
+    else:
+        poly_closed = poly_uv
+
+    # grid spacing
+    bb_min = poly_uv.min(axis=0)
+    bb_max = poly_uv.max(axis=0)
+    diag = float(np.linalg.norm(bb_max - bb_min))
+    if diag <= 0:
+        return np.zeros((0, 3), dtype=float)
+    if step is None:
+        step = max(diag * step_rel, 1e-6)
+
+    # make regular grid that covers bbox
+    nx = max(1, int(np.ceil((bb_max[0] - bb_min[0]) / step))) + 1
+    ny = max(1, int(np.ceil((bb_max[1] - bb_min[1]) / step))) + 1
+    gx = np.linspace(bb_min[0], bb_max[0], nx)
+    gy = np.linspace(bb_min[1], bb_max[1], ny)
+    GX, GY = np.meshgrid(gx, gy)
+    grid_xy = np.column_stack([GX.ravel(), GY.ravel()])  # (ny*nx,2)
+
+    # inside mask
+    inside_flat = _points_in_polygon_2d(poly_closed[:-1] if np.allclose(poly_closed[0], poly_closed[-1]) else poly_closed, grid_xy)
+    if not np.any(inside_flat):
+        return np.zeros((0, 3), dtype=float)
+
+    # boundary heights at loop vertices (height along n)
+    h_loop = (loop_xyz - c) @ n
+
+    # distance of each grid pt to boundary and interpolated boundary height there
+    dist, h_b = _boundary_distance_and_height(grid_xy, poly_uv, h_loop)
+
+    # reshape to 2D rasters
+    inside = inside_flat.reshape(ny, nx)
+    dist2d = dist.reshape(ny, nx)
+    hb2d = h_b.reshape(ny, nx)
+
+    # initialization: near-boundary ring as known heights
+    ring = (dist2d <= (step * 0.75)) & inside
+    H = np.full((ny, nx), np.nan, dtype=float)
+    H[ring] = hb2d[ring]
+    known = ring.copy()
+
+    # grow inward by neighbor averaging
+    if max_iters is None:
+        max_iters = nx + ny + 10
+    for _ in range(max_iters):
+        # 4-neighborhood shifts
+        up = np.roll(known, -1, axis=0)
+        dn = np.roll(known,  1, axis=0)
+        lf = np.roll(known, -1, axis=1)
+        rt = np.roll(known,  1, axis=1)
+        neighbor_any = (up | dn | lf | rt) & inside & (~known)
+        if not np.any(neighbor_any):
+            break
+        # average of known neighbors
+        acc = np.zeros_like(H)
+        cnt = np.zeros_like(H)
+        for sh, axis, dir in ((-1,0,'up'), (1,0,'dn'), (-1,1,'lf'), (1,1,'rt')):
+            Hs = np.roll(H, sh, axis=axis)
+            Ks = np.roll(known, sh, axis=axis)
+            use = Ks & neighbor_any
+            acc[use] += Hs[use]
+            cnt[use] += 1
+        upd = neighbor_any & (cnt > 0)
+        H[upd] = acc[upd] / np.maximum(cnt[upd], 1)
+        known[upd] = True
+
+    # fallback: any remaining unknown inside → use nearest boundary height
+    rem = inside & (~known)
+    if np.any(rem):
+        H[rem] = hb2d[rem]
+        known[rem] = True
+
+    # collect 3D points where inside
+    Y, X = np.nonzero(inside)
+    xs = GX[Y, X]
+    ys = GY[Y, X]
+    hs = H[Y, X]
+    P3 = c + np.outer(xs, u) + np.outer(ys, v) + np.outer(hs, n)
+    return P3
+
+
 def recolor_parts(vmeshes, belongings, mode, rand_colors):
     if mode == 0:
         for i, vmesh in enumerate(vmeshes):
@@ -488,3 +670,25 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     states.segment = {}
     states.segment.links = links
     states.segment.joints = joints
+
+    # --- build extrapolated surface points per link (from loops) ---
+    from collections import defaultdict
+    extrapoints = defaultdict(list)  # link_id -> list[[x,y,z], ...]
+
+    for res in results_list:
+        pid = int(res.get('parent', 0))
+        loop_idx = res.get('loop', None)
+        if pid <= 0 or loop_idx is None or len(loop_idx) < 3:
+            continue
+        loop_xyz = verts[np.asarray(loop_idx, dtype=int)]
+        pts3d = sample_dense_points_on_loop_surface(loop_xyz, step_rel=0.01)
+        if pts3d.size:
+            extrapoints[pid].extend(pts3d.astype(float).tolist())
+
+    # save into states
+    # DictHandler requires string keys for JSON; convert keys to str and ensure float values
+    extrapoints_serializable = {
+        str(int(k)): [[float(x) for x in pt] for pt in pts]
+        for k, pts in extrapoints.items()
+    }
+    states.segment.extrapoints = extrapoints_serializable

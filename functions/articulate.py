@@ -32,11 +32,13 @@ def remesh_watertight_trimesh(sub_verts: np.ndarray,
                                *,
                                pitch: float | None = None,
                                pitch_rel: float = 0.01,
-                               smooth_iters: int = 0) -> trimesh.Trimesh:
+                               smooth_iters: int = 0,
+                               extra_points: np.ndarray | list | None = None) -> trimesh.Trimesh:
     """
     open mesh라도 voxelization → marching_cubes로 닫힌 watertight mesh를 생성.
     - pitch가 None이면 bbox 대각선 * pitch_rel 로 자동 설정.
     - smooth_iters > 0 이면 약간의 스무딩 수행(선택).
+    - extra_points가 있으면 voxel 점군과 합쳐서 보정된 표면 추출 시도.
     """
     if sub_verts.size == 0 or sub_faces.size == 0:
         return trimesh.Trimesh(vertices=np.zeros((0,3)), faces=np.zeros((0,3), dtype=int), process=False)
@@ -62,8 +64,34 @@ def remesh_watertight_trimesh(sub_verts: np.ndarray,
         vox = vox.dilation(1).erosion(1)
     except Exception:
         pass
-    # marching_cubes on the filled volume → closed surface
-    closed = vox.marching_cubes
+
+    # collect base occupied voxel centers as points
+    try:
+        base_pts = vox.points.copy()
+    except Exception:
+        base_pts = None
+
+    # fuse with extra_points (e.g., extrapolated cap points)
+    all_pts = None
+    if base_pts is not None:
+        all_pts = base_pts
+    if extra_points is not None:
+        ep = np.asarray(extra_points, dtype=float).reshape(-1, 3)
+        if ep.size:
+            all_pts = ep if all_pts is None else np.vstack([all_pts, ep])
+
+    # try reconstructing from union point cloud (more robust sealing)
+    closed = None
+    try:
+        from trimesh.voxel import ops as vops
+        if all_pts is not None and all_pts.size:
+            closed = vops.points_to_marching_cubes(all_pts, pitch=pitch)
+    except Exception:
+        closed = None
+
+    # fallback: classic marching cubes on voxel grid
+    if closed is None:
+        closed = vox.marching_cubes
 
     # if any residual holes remain, try hole-filling as a safeguard
     try:
@@ -81,6 +109,36 @@ def remesh_watertight_trimesh(sub_verts: np.ndarray,
     return closed
 
 
+def _mapping_get(mapping, key):
+    """Safe getter that works with dict-like objects (e.g., DictHandler) and plain dicts.
+    Returns None if key not present or any access error occurs.
+    """
+    if mapping is None:
+        return None
+    # Try mapping.get(key) (DictHandler.get may only accept 1 arg)
+    try:
+        return mapping.get(key)
+    except TypeError:
+        # Some custom get signatures: retry without defaults already
+        try:
+            return mapping.get(key)
+        except Exception:
+            pass
+    except AttributeError:
+        # No get; try __getitem__
+        try:
+            return mapping[key]
+        except Exception:
+            return None
+    except Exception:
+        pass
+    # Fallback: try __getitem__
+    try:
+        return mapping[key]
+    except Exception:
+        return None
+
+
 # ---------- 3) links를 받아 각 링크별 watertight mesh 생성 ----------
 def build_closed_meshes_from_links(verts: np.ndarray,
                                    faces: np.ndarray,
@@ -88,7 +146,8 @@ def build_closed_meshes_from_links(verts: np.ndarray,
                                    *,
                                    pitch: float | None = None,
                                    pitch_rel: float = 0.01,
-                                   smooth_iters: int = 0):
+                                   smooth_iters: int = 0,
+                                   extrapoints_map: dict | None = None):
     """
     links 포맷을 유연하게 처리:
       - list[list[int]]: index가 카테고리 id, 값이 vertex index 리스트 (보통 0은 background)
@@ -125,7 +184,18 @@ def build_closed_meshes_from_links(verts: np.ndarray,
     out = {}
     for link_id, vlist in _iter_links(links):
         sub_v, sub_f, _ = extract_open_submesh(verts, faces, vlist)
-        closed = remesh_watertight_trimesh(sub_v, sub_f, pitch=pitch, pitch_rel=pitch_rel, smooth_iters=smooth_iters)
+        # gather extra points for this link if provided
+        extra_pts = None
+        if extrapoints_map is not None:
+            # keys may be int or str (DictHandler.get often only accepts a single argument)
+            extra_pts = _mapping_get(extrapoints_map, link_id)
+            if extra_pts is None:
+                extra_pts = _mapping_get(extrapoints_map, str(link_id))
+        closed = remesh_watertight_trimesh(
+            sub_v, sub_f,
+            pitch=pitch, pitch_rel=pitch_rel, smooth_iters=smooth_iters,
+            extra_points=extra_pts
+        )
         out[int(link_id)] = closed
     return out
 
@@ -148,7 +218,8 @@ def stage_articulate(cfgs, ms: pymeshlab.MeshSet):
         verts, faces, links,
         pitch=None,  # 자동 해상도 (bbox 기반)
         pitch_rel=0.01,  # 해상도 상대값 (더 작게하면 디테일↑, 폴리곤↑)
-        smooth_iters=0  # 필요시 3~5 정도로 살짝 스무딩
+        smooth_iters=0,  # 필요시 3~5 정도로 살짝 스무딩
+        extrapoints_map=getattr(states.segment, 'extrapoints', None)
     )
 
     for lid, m in closed_parts.items():
