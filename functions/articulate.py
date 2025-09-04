@@ -4,6 +4,7 @@ import trimesh
 from json_handler import JsonHandler
 
 
+
 # ---------- 1) open submesh 추출 (원본 faces 필터링 + 인덱스 리맵) ----------
 def extract_open_submesh(verts: np.ndarray, faces: np.ndarray, link_vertices: list[int] | np.ndarray):
     """
@@ -199,6 +200,244 @@ def build_closed_meshes_from_links(verts: np.ndarray,
         out[int(link_id)] = closed
     return out
 
+
+import os
+import math
+import numpy as np
+import xml.etree.ElementTree as ET
+import trimesh
+
+
+def _norm(v):
+    v = np.asarray(v, dtype=float).ravel()
+    n = np.linalg.norm(v)
+    return v / (n + 1e-12)
+
+
+def _to_str_xyz(v):
+    v = np.asarray(v, dtype=float).ravel()
+    return f"{v[0]:.9g} {v[1]:.9g} {v[2]:.9g}"
+
+
+def _export_meshes(closed_parts: dict[int, trimesh.Trimesh], out_dir: str, fmt: str = "stl") -> dict[int, str]:
+    os.makedirs(out_dir, exist_ok=True)
+    paths = {}
+    for lid, mesh in closed_parts.items():
+        path = os.path.join(out_dir, f"link_{lid}.{fmt}")
+        mesh.export(path)
+        paths[lid] = path
+    return paths
+
+
+def _compute_mass_inertia_at_com(mesh: trimesh.Trimesh, density: float):
+    """
+    Returns: mass, com(3,), inertia_3x3 at COM
+    """
+    # center of mass (density-independent for uniform density)
+    com = np.asarray(mesh.center_mass, dtype=float)
+
+    # mass from volume and density
+    try:
+        vol = float(mesh.volume)
+    except Exception:
+        vol = 0.0
+    mass = float(density) * vol
+
+    # inertia about COM: translate mesh to COM, then compute moment_inertia
+    T = np.eye(4)
+    T[:3, 3] = -com
+    moved = mesh.copy()
+    try:
+        moved.apply_transform(T)
+    except Exception:
+        pass
+    # moment_inertia at the (translated) origin == inertia at COM
+    I_attr = getattr(moved, "moment_inertia", None)
+    I_com = None
+    if callable(I_attr):
+        # API where moment_inertia is a method
+        try:
+            I_com = I_attr(density=density)
+        except TypeError:
+            # some versions use mass instead of density
+            I_com = I_attr(mass=mass)
+    elif isinstance(I_attr, np.ndarray):
+        # API where moment_inertia is already a 3x3 ndarray (usually unit density)
+        I_com = np.asarray(I_attr, dtype=float) * float(density)
+    else:
+        # last resort: try mass_properties dict-like
+        mp = getattr(moved, "mass_properties", None)
+        if isinstance(mp, dict) and "inertia" in mp:
+            I_com = np.asarray(mp["inertia"], dtype=float)
+        else:
+            I_com = np.zeros((3, 3), dtype=float)
+
+    return mass, com, I_com
+
+
+def _urdf_inertia_dict(I):
+    # URDF inertia ordering
+    return {
+        "ixx": float(I[0, 0]), "ixy": float(I[0, 1]), "ixz": float(I[0, 2]),
+        "iyy": float(I[1, 1]), "iyz": float(I[1, 2]),
+        "izz": float(I[2, 2]),
+    }
+
+
+def _build_tree(joints):
+    """
+    joints: [{'parent': p, 'child': c, 'axis': {'origin': [..], 'n': [..]}, 'type': 'Linear'|'Revolute'}]
+    Returns:
+      parent_of: {child_id -> parent_id}
+      joint_by_child: {child_id -> joint_entry}
+      children_of: {parent_id -> [child_ids]}
+    * 각 child는 하나의 부모만 갖는다고 가정(입력에서 첫 것 사용)
+    """
+    parent_of = {}
+    joint_by_child = {}
+    children_of = {}
+    for j in joints:
+        p = int(j["parent"]); c = int(j["child"])
+        if c in parent_of:   # 이미 부모가 있으면 첫 것을 유지(필요시 해제/검증 가능)
+            continue
+        parent_of[c] = p
+        joint_by_child[c] = j
+        children_of.setdefault(p, []).append(c)
+    return parent_of, joint_by_child, children_of
+
+
+def _gather_link_frame_origins(joints, base_origin=np.zeros(3)):
+    """
+    Returns link_frame_origin: {link_id -> 3D origin (world frame)}
+    - base(0) at base_origin
+    - each child at its joint['axis']['origin']
+    """
+    link_frame_origin = {0: np.asarray(base_origin, float)}
+    for j in joints:
+        c = int(j["child"])
+        o = np.asarray(j["axis"]["origin"], dtype=float)
+        link_frame_origin[c] = o
+        # 부모도 없으면 임시로 추가(부모가 조인트가 없을 수도 있으므로)
+        p = int(j["parent"])
+        link_frame_origin.setdefault(p, np.asarray(base_origin, float))
+    return link_frame_origin
+
+
+def generate_urdf(
+    closed_parts: dict[int, trimesh.Trimesh],
+    joints: list[dict],
+    *,
+    out_dir: str,
+    urdf_name: str = "robot",
+    density: float = 1000.0,  # kg/m^3 (물=1000), 필요시 조정
+    mesh_fmt: str = "stl",
+    base_origin=(0.0, 0.0, 0.0),
+):
+    """
+    closed_parts: {link_id: trimesh.Trimesh (world coords)}
+    joints: [{'parent': int, 'child': int, 'axis': {'origin': [x,y,z], 'n': [nx,ny,nz]}, 'type': 'Linear'|'Revolute'}]
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    mesh_paths = _export_meshes(closed_parts, os.path.join(out_dir, "meshes"), fmt=mesh_fmt)
+
+    # 트리 정보
+    parent_of, joint_by_child, children_of = _build_tree(joints)
+    link_ids = sorted(closed_parts.keys())
+
+    # 각 링크 프레임의 월드 원점 = 연결 조인트의 origin (base=0은 base_origin)
+    link_frame_origin = _gather_link_frame_origins(joints, base_origin=np.asarray(base_origin, float))
+
+    # XML 루트
+    robot = ET.Element("robot", name=urdf_name)
+
+    # 0) BASE LINK (질량 0)
+    base_link = ET.SubElement(robot, "link", name="base")
+    inertial = ET.SubElement(base_link, "inertial")
+    ET.SubElement(inertial, "origin", xyz="0 0 0", rpy="0 0 0")
+    ET.SubElement(inertial, "mass", value="0.0")
+    ET.SubElement(inertial, "inertia", ixx="0", ixy="0", ixz="0", iyy="0", iyz="0", izz="0")
+
+    # 1) 각 링크 정의
+    for lid in link_ids:
+        link = ET.SubElement(robot, "link", name=f"link_{lid}")
+
+        mesh = closed_parts[lid]
+
+        # 질량/관성 (COM 기준)
+        mass, com_world, I_com = _compute_mass_inertia_at_com(mesh, density=density)
+
+        # link 프레임 원점(=부모와 연결되는 조인트 origin) in world
+        link_o_world = link_frame_origin.get(lid, np.zeros(3))
+
+        # visual/collision의 origin (mesh 좌표가 world 기준임을 가정)
+        # -> 링크 프레임(=joint origin)로의 상대 이동만 적용 (회전은 0 가정)
+        v_origin = com_world * 0.0  # 시각화는 메쉬 자체를 link frame에 배치하려면:
+        # visual/collision은 보통 메쉬 원점(여기서는 world)에서 link frame으로 이동시켜야 하므로:
+        vis_xyz = _to_str_xyz(np.asarray([0,0,0], float) - link_o_world)
+        col_xyz = vis_xyz
+
+        visual = ET.SubElement(link, "visual")
+        ET.SubElement(visual, "origin", xyz=vis_xyz, rpy="0 0 0")
+        geom_v = ET.SubElement(visual, "geometry")
+        ET.SubElement(geom_v, "mesh", filename=os.path.relpath(mesh_paths[lid], out_dir))
+
+        collision = ET.SubElement(link, "collision")
+        ET.SubElement(collision, "origin", xyz=col_xyz, rpy="0 0 0")
+        geom_c = ET.SubElement(collision, "geometry")
+        ET.SubElement(geom_c, "mesh", filename=os.path.relpath(mesh_paths[lid], out_dir))
+
+        # inertial: COM에 배치 (inertial.origin 은 link frame 기준 좌표)
+        inertial = ET.SubElement(link, "inertial")
+        com_in_link = com_world - link_o_world
+        ET.SubElement(inertial, "origin", xyz=_to_str_xyz(com_in_link), rpy="0 0 0")
+        ET.SubElement(inertial, "mass", value=f"{mass:.9g}")
+        I = _urdf_inertia_dict(I_com)
+        ET.SubElement(inertial, "inertia",
+                      ixx=f"{I['ixx']:.9g}", ixy=f"{I['ixy']:.9g}", ixz=f"{I['ixz']:.9g}",
+                      iyy=f"{I['iyy']:.9g}", iyz=f"{I['iyz']:.9g}", izz=f"{I['izz']:.9g}")
+
+    # 2) 조인트 정의
+    # joint origin 은 parent link frame 기준 좌표여야 함.
+    # 각 링크 frame origin은 world에서 joint origin으로 정의했으므로:
+    # joint origin (parent frame) = (joint_world_origin - parent_link_world_origin)
+    for child, j in joint_by_child.items():
+        parent = int(j["parent"])
+        jtype = _mapping_get(j, "type")
+        urdf_type = "revolute" if jtype.lower().startswith("rev") else "prismatic"
+
+        parent_name = "base" if parent == 0 else f"link_{parent}"
+        child_name = f"link_{child}"
+
+        # 좌표
+        joint_world_o = np.asarray(j["axis"]["origin"], dtype=float)
+        parent_world_o = link_frame_origin.get(parent, np.zeros(3))
+        joint_in_parent = joint_world_o - parent_world_o
+
+        # 축 (parent frame 기준; 회전 0 가정 → world와 동일)
+        axis = _norm(j["axis"]["n"])
+
+        j_el = ET.SubElement(robot, "joint", name=f"joint_{parent}_{child}", type=urdf_type)
+        ET.SubElement(j_el, "parent", link=parent_name)
+        ET.SubElement(j_el, "child", link=child_name)
+        ET.SubElement(j_el, "origin", xyz=_to_str_xyz(joint_in_parent), rpy="0 0 0")
+        ET.SubElement(j_el, "axis", xyz=_to_str_xyz(axis))
+        ET.SubElement(j_el, "limit", lower="-1.57", upper="1.57", effort="10.0", velocity="1.0")
+
+        # 필요 시 limit 추가 (예: 프리즈마틱/리볼트) → 사용자 파라미터로 확장 가능
+        # ET.SubElement(j_el, "limit", lower="-3.14", upper="3.14", effort="10", velocity="1.0")
+
+    # 3) base와 직접 연결되지 않은 루트가 있을 경우, base에 고정 조인트로 연결(옵션)
+    # (여기서는 joints가 제공하는 트리만 사용)
+
+    # 저장
+    tree = ET.ElementTree(robot)
+    urdf_path = os.path.join(out_dir, f"{urdf_name}.urdf")
+    ET.indent(tree, space="  ")
+    tree.write(urdf_path, encoding="utf-8", xml_declaration=True)
+    return urdf_path
+
+
+
 def stage_articulate(cfgs, ms: pymeshlab.MeshSet):
     # 1) 원본 메쉬
     ms.set_current_mesh(0)
@@ -208,6 +447,7 @@ def stage_articulate(cfgs, ms: pymeshlab.MeshSet):
 
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
     links = states.segment.links
+    joints = states.segment.joints
 
     # 2) 너의 links 구조(현재는 list[list[int]] 형태였죠)
     #    links = [[] for _ in range(categories_num+1)]
@@ -224,6 +464,16 @@ def stage_articulate(cfgs, ms: pymeshlab.MeshSet):
 
     for lid, m in closed_parts.items():
         m.export(f"link_{lid}.ply")
+
+    urdf_path = generate_urdf(
+        closed_parts=closed_parts,
+        joints=joints,  # parent, child, axis:{origin,n}, type in {"Revolute","Linear"}
+        out_dir="out_urdf",
+        urdf_name="my_robot",
+        density=1000.0,  # 재질에 맞게 조정
+        mesh_fmt="stl",
+    )
+    print("URDF:", urdf_path)
 
     import vedo
     actors = [vedo.Mesh([m.vertices, m.faces]).c('lightblue').alpha(0.7) for m in closed_parts.values()]
