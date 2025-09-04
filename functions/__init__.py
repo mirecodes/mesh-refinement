@@ -5,3 +5,4 @@ from .refine import *
 from .decompose import *
 from .segment import *
 from .articulate import *
+from .bind import *

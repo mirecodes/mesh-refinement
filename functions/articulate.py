@@ -1,6 +1,3 @@
-# ================================
-# Imports
-# ================================
 import os
 import xml.etree.ElementTree as ET
 from typing import Dict, List

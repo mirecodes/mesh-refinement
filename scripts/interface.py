@@ -2,10 +2,9 @@ import os
 from dataclasses import dataclass, field
 
 import pymeshlab
-import vedo
 from json_handler import JsonHandler
 
-from functions import stage_transform, stage_refine, stage_decompose, stage_segment, stage_articulate
+from functions import stage_transform, stage_refine, stage_decompose, stage_segment, stage_articulate, stage_bind
 
 @dataclass
 class SystemConfigs():
@@ -22,6 +21,7 @@ class SystemConfigs():
     enable_stage_decompose: bool = False
     enable_stage_segment: bool = True
     enable_stage_articulate: bool = True
+    enable_stage_bind: bool = True
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
@@ -124,6 +124,15 @@ def execute_pipeline(cfgs: SystemConfigs):
     if cfgs.enable_stage_articulate:
         print("[info]: Running the articulation stage")
         stage_articulate(cfgs, ms)
+    else:
+        print("[info]: Loading the articulated meshset")
+        ms = load_from_saves(cfgs, 'articulate')
+
+    if cfgs.enable_stage_bind:
+        print("[info]: Running the binding stage")
+        stage_bind(cfgs, ms)
+
+
 
 def load_from_saves(cfgs: SystemConfigs, stage: str):
     states = JsonHandler(cfgs.json_states_dir, auto_save=False)
