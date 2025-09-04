@@ -185,6 +185,419 @@ def _boundary_distance_and_height(grid_xy: np.ndarray, poly_uv: np.ndarray, h_lo
             hb[upd] = (1.0 - t[upd]) * h_loop[i] + t[upd] * h_loop[i + 1]
     return np.sqrt(dist2), hb
 
+# --- Delaunay-based dense sampling helpers ---
+def _densify_loop_uv(poly_uv: np.ndarray, step: float) -> np.ndarray:
+    """Return a densified (closed) polyline by inserting points along edges every ~step."""
+    poly_uv = np.asarray(poly_uv, dtype=float)
+    if poly_uv.shape[0] >= 2 and not np.allclose(poly_uv[0], poly_uv[-1]):
+        poly_uv = np.vstack([poly_uv, poly_uv[0]])
+    pts = [poly_uv[0]]
+    for i in range(len(poly_uv) - 1):
+        a = poly_uv[i]
+        b = poly_uv[i + 1]
+        seg = b - a
+        L = float(np.linalg.norm(seg))
+        if L <= 1e-12:
+            continue
+        nadd = max(0, int(np.ceil(L / max(step, 1e-12))) - 1)
+        for t in range(1, nadd + 1):
+            pts.append(a + (t / (nadd + 1)) * seg)
+        pts.append(b)
+    return np.asarray(pts, dtype=float)
+
+def _triangulate_points_2d(points_uv: np.ndarray):
+    """Try to build a Delaunay triangulation for 2D points using matplotlib; return (tri, used).
+    If matplotlib is unavailable, return (None, False)."""
+    try:
+        import matplotlib.tri as mtri
+    except Exception:
+        return None, False
+    pts = np.asarray(points_uv, dtype=float)
+    if pts.shape[0] < 3:
+        return None, False
+    tri = mtri.Triangulation(pts[:, 0], pts[:, 1])
+    if tri.triangles.size == 0:
+        return None, False
+    return tri, True
+
+def _build_adjacency_from_tri(tri_obj, n_pts: int):
+    """Build an undirected neighbor list (list of sets) from a matplotlib Triangulation."""
+    neighbors = [set() for _ in range(n_pts)]
+    tris = np.asarray(tri_obj.triangles, dtype=int)
+    for t in tris:
+        a, b, c = int(t[0]), int(t[1]), int(t[2])
+        neighbors[a].update((b, c))
+        neighbors[b].update((a, c))
+        neighbors[c].update((a, b))
+    return [np.asarray(sorted(list(s)), dtype=int) for s in neighbors]
+
+def sample_dense_points_on_loop_delaunay(loop_xyz: np.ndarray,
+                                         *,
+                                         step: float | None = None,
+                                         step_rel: float = 0.01,
+                                         sigma_scale: float = 2.0,
+                                         k_min: int = 4,
+                                         max_passes: int = 5) -> np.ndarray:
+    """
+    Project loop to its PCA plane, densely sample interior points, (optionally) Delaunay-triangulate,
+    then lift heights from boundary inward using a Gaussian-weighted average of already-known neighbors.
+
+    - Boundary-adjacent points (within ~0.75*step) get boundary height directly.
+    - Interior points are processed in order of distance to boundary (ascending).
+    - For each point, use neighbors (from triangulation if available, otherwise k-nearest in a fixed radius)
+      that already have assigned heights to compute a weighted average (Gaussian kernel).
+    - Height is along the PCA normal; final 3D = c + x*u + y*v + h*n.
+
+    Returns: (N, 3) 3D points.
+    """
+    loop_xyz = np.asarray(loop_xyz, dtype=float)
+    if loop_xyz.shape[0] < 3:
+        return np.zeros((0, 3), dtype=float)
+
+    # PCA plane and basis
+    c, n = _pca_plane(loop_xyz)
+    u, v, n = _orthonormal_basis_from_normal(n)
+
+    # Project loop to 2D
+    rel = loop_xyz - c
+    poly_uv = np.column_stack([rel @ u, rel @ v])
+
+    # Ensure closed poly for downstream helpers
+    if not np.allclose(poly_uv[0], poly_uv[-1]):
+        poly_closed = np.vstack([poly_uv, poly_uv[0]])
+    else:
+        poly_closed = poly_uv
+
+    # Compute bbox and step
+    bb_min = poly_uv.min(axis=0)
+    bb_max = poly_uv.max(axis=0)
+    diag = float(np.linalg.norm(bb_max - bb_min))
+    if diag <= 0:
+        return np.zeros((0, 3), dtype=float)
+    if step is None:
+        step = max(diag * step_rel, 1e-6)
+
+    # Build a dense grid and keep points inside polygon
+    nx = max(1, int(np.ceil((bb_max[0] - bb_min[0]) / step))) + 1
+    ny = max(1, int(np.ceil((bb_max[1] - bb_min[1]) / step))) + 1
+    gx = np.linspace(bb_min[0], bb_max[0], nx)
+    gy = np.linspace(bb_min[1], bb_max[1], ny)
+    GX, GY = np.meshgrid(gx, gy)
+    grid_xy = np.column_stack([GX.ravel(), GY.ravel()])
+
+    inside_flat = _points_in_polygon_2d(poly_closed[:-1] if np.allclose(poly_closed[0], poly_closed[-1]) else poly_closed, grid_xy)
+    if not np.any(inside_flat):
+        return np.zeros((0, 3), dtype=float)
+    inside_idx = np.nonzero(inside_flat)[0]
+    pts_inside = grid_xy[inside_idx]
+
+    # Densify boundary and compute per-point boundary height and distance
+    dense_boundary = _densify_loop_uv(poly_uv, step)
+    h_loop = (loop_xyz - c) @ n  # boundary heights at given vertices
+    # Interpolate heights along boundary polyline for arbitrary projections
+    # Use nearest-segment projection helper to get distance and interpolated boundary height
+    dist_all, hb_all = _boundary_distance_and_height(pts_inside, poly_uv, h_loop)
+
+    # Combine interior points with densified boundary (mark boundary with zero distance)
+    pts_uv = np.vstack([pts_inside, dense_boundary])
+    M_in = pts_inside.shape[0]
+    M_bd = dense_boundary.shape[0]
+    dist = np.concatenate([dist_all, np.zeros(M_bd, dtype=float)])
+    hb = np.concatenate([hb_all, ((dense_boundary - dense_boundary.mean(0)) @ np.array([0.0, 0.0]))])  # placeholder, overwritten below
+
+    # For boundary points, set boundary height exactly by interpolating original boundary heights
+    # Compute height for dense_boundary via piecewise-linear interpolation along original polyline:
+    _, hb_dense = _boundary_distance_and_height(dense_boundary, poly_uv, h_loop)
+    hb[M_in:] = hb_dense
+
+    # Optional Delaunay triangulation for neighbor graph
+    tri_obj, tri_used = _triangulate_points_2d(pts_uv)
+    if tri_used:
+        neighbors = _build_adjacency_from_tri(tri_obj, pts_uv.shape[0])
+    else:
+        neighbors = None
+
+    # Initialize heights: boundary known, interior unknown
+    H = np.full(pts_uv.shape[0], np.nan, dtype=float)
+    known = np.zeros_like(H, dtype=bool)
+    # Consider points "boundary-adjacent" if within 0.75*step
+    bd_adj = (np.arange(pts_uv.shape[0]) >= M_in) | ((dist <= (step * 0.75)) & (np.arange(pts_uv.shape[0]) < M_in))
+    H[bd_adj] = np.where(np.arange(pts_uv.shape[0]) >= M_in, hb, hb)[bd_adj]
+    known[bd_adj] = True
+
+    # Processing order: interior by increasing distance to boundary
+    order = np.argsort(dist[:M_in])
+    sigma = max(step * sigma_scale, 1e-9)
+    radius = 3.0 * sigma
+
+    def _update_from_neighbors(idx):
+        """Compute height for point idx from known neighbors (Gaussian weights)."""
+        if neighbors is not None:
+            cand = neighbors[idx]
+        else:
+            # fallback: use all points within a radius
+            dif = pts_uv - pts_uv[idx]
+            d = np.sqrt(np.sum(dif * dif, axis=1))
+            cand = np.nonzero((d > 0) & (d <= radius))[0]
+        # keep only already-known
+        if cand.size == 0:
+            return False
+        kk = cand[known[cand]]
+        if kk.size < max(1, k_min):
+            return False
+        d2 = np.sum((pts_uv[kk] - pts_uv[idx])**2, axis=1)
+        w = np.exp(-d2 / (2.0 * sigma * sigma))
+        w_sum = float(np.sum(w))
+        if w_sum <= 1e-12:
+            return False
+        H[idx] = float(np.sum(w * H[kk]) / w_sum)
+        known[idx] = True
+        return True
+
+    # Multi-pass inward propagation
+    passes = 0
+    # First pass: follow order strictly
+    for idx in order:
+        if known[idx]:
+            continue
+        _ = _update_from_neighbors(idx)
+    # Additional passes to resolve isolated points
+    while (not np.all(known[:M_in])) and passes < max_passes:
+        passes += 1
+        pending = np.nonzero(~known[:M_in])[0]
+        for idx in pending:
+            _ = _update_from_neighbors(idx)
+
+    # Fallback: any still-unknown interior -> use nearest boundary height
+    pend = np.nonzero(~known[:M_in])[0]
+    if pend.size:
+        H[pend] = hb[:M_in][pend]
+        known[pend] = True
+
+    # Assemble 3D points (interior + boundary) and return only interior+boundary-adjacent points
+    # (We include boundary too; caller may choose to keep or filter)
+    X = pts_uv[:, 0]; Y = pts_uv[:, 1]; Z = H
+    P3 = c + np.outer(X, u) + np.outer(Y, v) + np.outer(Z, n)
+    return P3
+
+def triangulate_patch_on_loop(loop_xyz: np.ndarray,
+                              *,
+                              step_rel: float = 0.01,
+                              sigma_scale: float = 2.0,
+                              k_min: int = 6):
+    """
+    Build a triangulated patch over a loop and return (P3, F):
+      - P3: (N,3) reconstructed 3D points on PCA plane-lifted surface
+      - F:  (M,3) int triangles (Delaunay in 2D filtered to polygon interior)
+    Falls back to returning only points (empty F) if triangulation unavailable.
+    """
+    loop_xyz = np.asarray(loop_xyz, dtype=float)
+    if loop_xyz.shape[0] < 3:
+        return np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=int)
+
+    # PCA plane and basis
+    c, n = _pca_plane(loop_xyz)
+    u, v, n = _orthonormal_basis_from_normal(n)
+
+    # Project loop to 2D (UV)
+    rel = loop_xyz - c
+    poly_uv = np.column_stack([rel @ u, rel @ v])
+
+    # Ensure closed
+    if not np.allclose(poly_uv[0], poly_uv[-1]):
+        poly_closed = np.vstack([poly_uv, poly_uv[0]])
+    else:
+        poly_closed = poly_uv
+
+    # Step size from bbox diag
+    bb_min = poly_uv.min(axis=0)
+    bb_max = poly_uv.max(axis=0)
+    diag = float(np.linalg.norm(bb_max - bb_min))
+    if diag <= 0:
+        return np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=int)
+    step = max(diag * step_rel, 1e-6)
+
+    # Dense grid inside polygon
+    nx = max(1, int(np.ceil((bb_max[0] - bb_min[0]) / step))) + 1
+    ny = max(1, int(np.ceil((bb_max[1] - bb_min[1]) / step))) + 1
+    gx = np.linspace(bb_min[0], bb_max[0], nx)
+    gy = np.linspace(bb_min[1], bb_max[1], ny)
+    GX, GY = np.meshgrid(gx, gy)
+    grid_xy = np.column_stack([GX.ravel(), GY.ravel()])
+    inside_flat = _points_in_polygon_2d(
+        poly_closed[:-1] if np.allclose(poly_closed[0], poly_closed[-1]) else poly_closed,
+        grid_xy
+    )
+    if not np.any(inside_flat):
+        return np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=int)
+    inside_idx = np.nonzero(inside_flat)[0]
+    pts_inside = grid_xy[inside_idx]
+
+    # Densify boundary + boundary heights
+    dense_boundary = _densify_loop_uv(poly_uv, step)
+    h_loop = (loop_xyz - c) @ n
+    dist_all, hb_all = _boundary_distance_and_height(pts_inside, poly_uv, h_loop)
+
+    # Combined UV set
+    pts_uv = np.vstack([pts_inside, dense_boundary])
+    M_in = pts_inside.shape[0]
+    M_bd = dense_boundary.shape[0]
+    dist = np.concatenate([dist_all, np.zeros(M_bd, dtype=float)])
+    _, hb_dense = _boundary_distance_and_height(dense_boundary, poly_uv, h_loop)
+    hb = np.concatenate([hb_all, hb_dense])
+
+    # Triangulation (2D)
+    tri_obj, tri_used = _triangulate_points_2d(pts_uv)
+
+    if not tri_used:
+        # (keep existing fallback block unchanged)
+        sigma = max(step * sigma_scale, 1e-9)
+        radius = 3.0 * sigma
+        H = np.full(pts_uv.shape[0], np.nan, dtype=float)
+        known = np.zeros_like(H, dtype=bool)
+        bd_adj = (np.arange(pts_uv.shape[0]) >= M_in) | (
+            (dist <= (step * 0.75)) & (np.arange(pts_uv.shape[0]) < M_in)
+        )
+        H[bd_adj] = hb[bd_adj]; known[bd_adj] = True
+        order = np.argsort(dist[:M_in])
+
+        def _update(idx):
+            dif = pts_uv - pts_uv[idx]
+            d = np.sqrt(np.sum(dif * dif, axis=1))
+            cand = np.nonzero((d > 0) & (d <= radius))[0]
+            kk = cand[known[cand]]
+            if kk.size < max(1, k_min):
+                return False
+            d2 = np.sum((pts_uv[kk] - pts_uv[idx]) ** 2, axis=1)
+            w = np.exp(-d2 / (2.0 * sigma * sigma))
+            ws = float(np.sum(w))
+            if ws <= 1e-12:
+                return False
+            H[idx] = float(np.sum(w * H[kk]) / ws)
+            known[idx] = True
+            return True
+
+        for idx in order:
+            if not known[idx]:
+                _update(idx)
+        pend = np.nonzero(~known[:M_in])[0]
+        if pend.size:
+            H[pend] = hb[:M_in][pend]; known[pend] = True
+
+        X = pts_uv[:, 0]; Y = pts_uv[:, 1]; Z = H
+        P3 = c + np.outer(X, u) + np.outer(Y, v) + np.outer(Z, n)
+        return P3, np.zeros((0, 3), dtype=int)
+    else:
+        # Boundary mask: mark the densified boundary points as boundary (last M_bd points)
+        N = pts_uv.shape[0]
+        boundary_mask = np.zeros(N, dtype=bool)
+        boundary_mask[M_in:M_in+M_bd] = True
+        # Prepare boundary heights array aligned to pts_uv
+        hB = np.zeros(N, dtype=float)
+        hB[M_in:M_in+M_bd] = hb_dense  # heights for the densified boundary
+        # Solve harmonic heights over triangulation
+        H = _harmonic_heights_on_triangulation(pts_uv, tri_obj, boundary_mask, hB,
+                                               prefer_scipy=True, max_iters=2000, tol=1e-7)
+
+        # 3D points
+        X = pts_uv[:, 0]; Y = pts_uv[:, 1]; Z = H
+        P3 = c + np.outer(X, u) + np.outer(Y, v) + np.outer(Z, n)
+
+        # Faces = triangles inside polygon
+        tris = np.asarray(tri_obj.triangles, dtype=int)
+        cent = (pts_uv[tris][:, 0, :] + pts_uv[tris][:, 1, :] + pts_uv[tris][:, 2, :]) / 3.0
+        inside_tri = _points_in_polygon_2d(
+            poly_closed[:-1] if np.allclose(poly_closed[0], poly_closed[-1]) else poly_closed,
+            cent
+        )
+        tris = tris[inside_tri]
+        return P3, tris.astype(int)
+
+
+# --- Harmonic height field solver for triangulation ---
+def _harmonic_heights_on_triangulation(pts_uv: np.ndarray,
+                                       tri_obj,
+                                       boundary_mask: np.ndarray,
+                                       h_boundary: np.ndarray,
+                                       *,
+                                       prefer_scipy: bool = True,
+                                       max_iters: int = 1000,
+                                       tol: float = 1e-6) -> np.ndarray:
+    """
+    Solve for heights H on triangulation s.t. Laplacian(H)=0 on interior, Dirichlet on boundary.
+    - If SciPy is available: build sparse Laplacian (uniform weights) and solve (CG).
+    - Else: Jacobi iterations on the uniform-weight graph Laplacian.
+    Inputs:
+      pts_uv: (N,2) points (interior + boundary)
+      tri_obj: matplotlib.tri.Triangulation
+      boundary_mask: (N,) bool, True for boundary vertices
+      h_boundary: (N,) float, defined only where boundary_mask==True (others ignored)
+    Returns:
+      H: (N,) float heights for all vertices (boundary preserved)
+    """
+    import numpy as _np
+    N = pts_uv.shape[0]
+    tris = _np.asarray(tri_obj.triangles, dtype=int)
+    # Build neighbor sets from triangles (uniform weights)
+    neighbors = [set() for _ in range(N)]
+    for t in tris:
+        a, b, c = int(t[0]), int(t[1]), int(t[2])
+        neighbors[a].update((b, c))
+        neighbors[b].update((a, c))
+        neighbors[c].update((a, b))
+    deg = _np.array([len(s) for s in neighbors], dtype=float)
+    # Initialize H with boundary values
+    H = _np.zeros(N, dtype=float)
+    H[boundary_mask] = h_boundary[boundary_mask]
+    interior = ~boundary_mask
+    if not interior.any():
+        return H
+    # Try SciPy sparse solve
+    used_scipy = False
+    if prefer_scipy:
+        try:
+            import scipy.sparse as sp
+            import scipy.sparse.linalg as spla
+            rows = []
+            cols = []
+            data = []
+            b = _np.zeros(N, dtype=float)
+            for i in range(N):
+                if boundary_mask[i]:
+                    rows.append(i); cols.append(i); data.append(1.0)
+                    b[i] = H[i]
+                else:
+                    rows.append(i); cols.append(i); data.append(1.0)
+                    # subtract average of neighbors → move to RHS
+                    if deg[i] > 0:
+                        w = 1.0 / deg[i]
+                        for j in neighbors[i]:
+                            rows.append(i); cols.append(int(j)); data.append(-w)
+            A = sp.csr_matrix((data, (rows, cols)), shape=(N, N))
+            H = spla.cg(A, b, x0=H, tol=tol, maxiter=max_iters)[0]
+            used_scipy = True
+        except Exception:
+            used_scipy = False
+    if not used_scipy:
+        # Jacobi: H_new[i] = mean(H[neighbors]) for interior nodes, boundary fixed
+        H_new = H.copy()
+        for _ in range(max_iters):
+            max_delta = 0.0
+            for i in _np.nonzero(interior)[0]:
+                if deg[i] == 0:
+                    continue
+                s = 0.0
+                for j in neighbors[i]:
+                    s += H[int(j)]
+                v = s / deg[i]
+                d = abs(v - H[i])
+                if d > max_delta:
+                    max_delta = d
+                H_new[i] = v
+            H, H_new = H_new, H
+            if max_delta < tol:
+                break
+    return H
 
 def sample_dense_points_on_loop_surface(loop_xyz: np.ndarray,
                                          *,
@@ -661,19 +1074,60 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     # Save intermediate state into the json file
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
 
-    links = [[] for _ in range(categories_num+1)]
-    vert_label = classify_vertices(verts, categories, use_signed_dist=True)
-    for index, cat in enumerate(vert_label):
-        links[cat].append(index)
+    # --- build and save per-link meshes instead of vertex-index lists ---
+    def _extract_submesh(verts_np: np.ndarray, faces_np: np.ndarray, labels_np: np.ndarray, k: int):
+        """Return (sub_verts, sub_faces) for the faces whose all vertices have label k."""
+        faces_k_mask = np.all(labels_np[faces_np] == k, axis=1)
+        faces_k = faces_np[faces_k_mask]
+        if faces_k.size == 0:
+            return None, None
+        vidx = np.unique(faces_k.ravel())
+        vmap = -np.ones(labels_np.shape[0], dtype=int)
+        vmap[vidx] = np.arange(vidx.size, dtype=int)
+        sub_faces = vmap[faces_k]
+        sub_verts = verts_np[vidx]
+        return sub_verts, sub_faces
+
+    # classify vertices, then extract meshes
+    vert_label = classify_vertices(verts, categories, use_signed_dist=True).astype(int)
+
+    # prepare output directory (sibling to json_states_dir)
+    seg_dir = os.path.join(os.path.dirname(cfgs.json_states_dir), "segment_mesh")
+    os.makedirs(seg_dir, exist_ok=True)
+
+    # save meshes and record paths in state
+    segment_mesh_paths = {}
+    for k in range(1, categories_num + 1):
+        sv, sf = _extract_submesh(verts, faces, vert_label, k)
+        if sv is None or sf is None:
+            continue
+        tri_k = trimesh.Trimesh(vertices=sv, faces=sf, process=False)
+        out_path = os.path.join(seg_dir, f"link_{k}.ply")
+        try:
+            tri_k.export(out_path)
+        except Exception:
+            # fallback to obj if ply writer is unavailable
+            out_path = os.path.join(seg_dir, f"link_{k}.obj")
+            tri_k.export(out_path)
+        segment_mesh_paths[str(k)] = out_path
+
     joints = build_joints_from_rlps(rlps)
 
+    # save into states
     states.segment = {}
-    states.segment.links = links
+    states.segment.mesh_paths = segment_mesh_paths  # {"1": ".../link_1.ply", ...}
     states.segment.joints = joints
+    # Backward compatibility for downstream code expecting this field
+    try:
+        states.segment.links = []
+    except Exception:
+        pass
 
     # --- build extrapolated surface points per link (from loops) ---
     from collections import defaultdict
     extrapoints = defaultdict(list)  # link_id -> list[[x,y,z], ...]
+    patch_vertices = defaultdict(list)  # link_id -> [ (Ni,3) arrays ]
+    patch_faces = defaultdict(list)  # link_id -> [ (Mi,3) arrays ] (local indices)
 
     for res in results_list:
         pid = int(res.get('parent', 0))
@@ -681,12 +1135,56 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
         if pid <= 0 or loop_idx is None or len(loop_idx) < 3:
             continue
         loop_xyz = verts[np.asarray(loop_idx, dtype=int)]
-        pts3d = sample_dense_points_on_loop_surface(loop_xyz, step_rel=0.01)
+
+        # dense points (debug/inspection)
+        pts3d = sample_dense_points_on_loop_delaunay(
+            loop_xyz, step_rel=0.01, sigma_scale=2.0, k_min=6
+        )
         if pts3d.size:
             extrapoints[pid].extend(pts3d.astype(float).tolist())
 
-    # save into states
-    # DictHandler requires string keys for JSON; convert keys to str and ensure float values
+        # triangulated patch for actual hole filling
+        P3, F = triangulate_patch_on_loop(
+            loop_xyz, step_rel=0.01, sigma_scale=2.0, k_min=6
+        )
+        if P3.size and F.size:
+            patch_vertices[pid].append(P3.astype(float))
+            patch_faces[pid].append(F.astype(np.int64))
+
+    # --- append patches to each per-link mesh and overwrite ---
+    for k_str, path in segment_mesh_paths.items():
+        try:
+            k = int(k_str)
+        except Exception:
+            continue
+        if (k not in patch_vertices) or (len(patch_vertices[k]) == 0):
+            continue
+
+        tri_k = trimesh.load(path, process=False)
+        V = tri_k.vertices
+        F = tri_k.faces
+
+        for P3, Ft in zip(patch_vertices[k], patch_faces[k]):
+            offset = V.shape[0]
+            V = np.vstack([V, P3])
+            F = np.vstack([F, Ft + offset])
+
+        tri_out = trimesh.Trimesh(vertices=V, faces=F, process=False)
+        # Optional: cleanup to weld duplicates at the boundary for visual smoothness
+        try:
+            tri_out.remove_duplicate_vertices()
+            tri_out.remove_degenerate_faces()
+            tri_out.remove_unreferenced_vertices()
+        except Exception:
+            pass
+        try:
+            tri_out.export(path)
+        except Exception:
+            alt = os.path.splitext(path)[0] + ".obj"
+            tri_out.export(alt)
+            segment_mesh_paths[k_str] = alt  # 경로 업데이트(필요시)
+
+    # save extrapoints into states (as before)
     extrapoints_serializable = {
         str(int(k)): [[float(x) for x in pt] for pt in pts]
         for k, pts in extrapoints.items()

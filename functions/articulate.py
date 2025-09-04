@@ -4,7 +4,6 @@ import trimesh
 from json_handler import JsonHandler
 
 
-
 # ---------- 1) open submesh 추출 (원본 faces 필터링 + 인덱스 리맵) ----------
 def extract_open_submesh(verts: np.ndarray, faces: np.ndarray, link_vertices: list[int] | np.ndarray):
     """
@@ -458,7 +457,7 @@ def stage_articulate(cfgs, ms: pymeshlab.MeshSet):
         verts, faces, links,
         pitch=None,  # 자동 해상도 (bbox 기반)
         pitch_rel=0.01,  # 해상도 상대값 (더 작게하면 디테일↑, 폴리곤↑)
-        smooth_iters=0,  # 필요시 3~5 정도로 살짝 스무딩
+        smooth_iters=10,  # 필요시 3~5 정도로 살짝 스무딩
         extrapoints_map=getattr(states.segment, 'extrapoints', None)
     )
 
