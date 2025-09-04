@@ -621,6 +621,32 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
                     rlp['vectors'].append({'center': center, 'n': n, 'd': np.zeros(3)})
 
 
+def build_extrapoints_and_patches(results_list: List[dict],
+                                  verts: np.ndarray):
+    """
+    각 loop에 대해:
+      - (디버그) 고밀도 pts3d
+      - 실제 메움용 triangulated patch (P3, F)
+    """
+    extrapoints: Dict[int, List[List[float]]] = defaultdict(list)
+    patch_vertices: Dict[int, List[np.ndarray]] = defaultdict(list)
+    patch_faces: Dict[int, List[np.ndarray]] = defaultdict(list)
+    for res in results_list:
+        pid = int(res.get('parent', 0))
+        loop_idx = res.get('loop', None)
+        if pid <= 0 or loop_idx is None or len(loop_idx) < 3:
+            continue
+        loop_xyz = verts[np.asarray(loop_idx, dtype=int)]
+        pts3d = sample_dense_points_on_loop_delaunay(loop_xyz, step_rel=0.03, sigma_scale=2.0, k_min=6)
+        if pts3d.size:
+            extrapoints[pid].extend(pts3d.astype(float).tolist())
+        P3, F = triangulate_patch_on_loop(loop_xyz, step_rel=0.03, sigma_scale=2.0, k_min=6)
+        if P3.size and F.size:
+            patch_vertices[pid].append(P3.astype(float))
+            patch_faces[pid].append(F.astype(np.int64))
+    return extrapoints, patch_vertices, patch_faces
+
+
 # ================================
 # Visualization callbacks (unchanged API)
 # ================================
@@ -864,3 +890,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     states.segment.dirs = {}
     states.segment.dirs.mesh = segment_mesh_paths
     states.segment.joints = joints
+
+    # ---- Patches & extrapoints ----
+    extrapoints, patch_vertices, patch_faces = build_extrapoints_and_patches(results_list, verts)
+    segment_mesh_paths = append_patches_to_mesh_files(segment_mesh_paths, patch_vertices, patch_faces)
