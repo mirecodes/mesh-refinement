@@ -55,6 +55,7 @@ class SystemConfigs():
         self.mesh_working_dir = os.path.join(self.working_dir, "meshes")
         self.json_configs_dir = os.path.join(self.json_attr_dir, "configs.json")
         self.json_states_dir = os.path.join(self.json_attr_dir, "states.json")
+        self.urdf_working_dir = os.path.join(self.working_dir, "urdf")
 
         self.mesh_in_dir = os.path.join(self.in_dir, self.fname_mesh)
         self.gaussian_in_dir = os.path.join(self.in_dir, self.fname_gaussian)
@@ -70,6 +71,7 @@ class SystemConfigs():
             self.working_dir,
             self.json_attr_dir,
             self.mesh_working_dir,
+            self.urdf_working_dir,
         ]
 
         for path in dirs_to_create:
