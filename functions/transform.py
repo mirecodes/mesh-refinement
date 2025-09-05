@@ -4,9 +4,41 @@ import numpy as np
 import pymeshlab
 import vedo
 from json_handler import JsonHandler
+from plyfile import PlyElement, PlyData
+from scipy.spatial.transform import Rotation as R
+
 
 from functions import calculate_transforms, apply_transform_from_matrix
 
+
+def _apply_transform_to_gaussian(gaussian_in_path, gaussian_out_path, matrix_4x4):
+    g_ply = PlyData.read(gaussian_in_path)
+    v = g_ply['vertex']
+    names = v.data.dtype.names
+
+    Rmat, Tvec = matrix_4x4[:3, :3], matrix_4x4[:3, 3]
+
+    # Euler 분해 후 부호 반전
+    rot = R.from_matrix(Rmat)
+    euler = -rot.as_euler('xyz', degrees=True)   # ★ 부호 반전
+    Rxyz = R.from_euler('xyz', euler, degrees=True).as_matrix()
+
+    # 좌표
+    if all(k in names for k in ('x','y','z')):
+        P = np.stack([v['x'], v['y'], v['z']], axis=1).astype(np.float64)
+        P_new = (P @ Rxyz.T) + Tvec
+        v['x'], v['y'], v['z'] = [P_new[:, i].astype(v['x'].dtype) for i in range(3)]
+
+    # 노멀
+    if all(k in names for k in ('nx','ny','nz')):
+        N = np.stack([v['nx'], v['ny'], v['nz']], axis=1).astype(np.float64)
+        N_new = (N @ Rxyz.T)
+        N_new /= (np.linalg.norm(N_new, axis=1, keepdims=True) + 1e-12)
+        v['nx'], v['ny'], v['nz'] = [N_new[:, i].astype(v['nx'].dtype) for i in range(3)]
+
+    # 그대로 저장
+    new_vertex = PlyElement.describe(v.data, 'vertex')
+    PlyData([new_vertex], text=False).write(gaussian_out_path)
 
 def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
 
@@ -66,14 +98,18 @@ def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
     fine_transform = assembly.transform.matrix.T
 
     transform = fine_transform @ initial_transform
-    apply_transform_from_matrix(ms, fine_transform)
+    # apply_transform_from_matrix(ms, fine_transform)
+
+    gaussian_in_dir = cfgs.gaussian_in_dir
+    gaussian_out_dir = os.path.join(cfgs.mesh_working_dir, f"transformed_gaussian.{cfgs.extension}")
+    _apply_transform_to_gaussian(gaussian_in_dir, gaussian_out_dir, initial_transform)
 
     # save mesh
     mesh_dir = os.path.join(cfgs.mesh_working_dir, f"transformed_mesh.{cfgs.extension}")
-    gaussian_dir = os.path.join(cfgs.mesh_working_dir, f"transformed_gaussian.{cfgs.extension}")
+    # gaussian_dir = os.path.join(cfgs.mesh_working_dir, f"transformed_gaussian.{cfgs.extension}")
 
     ms.set_current_mesh(0); ms.save_current_mesh(mesh_dir)
-    ms.set_current_mesh(1); ms.save_current_mesh(gaussian_dir)
+    # ms.set_current_mesh(1); ms.save_current_mesh(gaussian_dir)
     ms.set_current_mesh(0)
 
     # TODO: Remove current part later on
@@ -93,7 +129,7 @@ def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
     states.transform.matrix = transform.tolist()
     states.transform.dirs = {
         "mesh": mesh_dir,
-        "gaussian": gaussian_dir,
+        "gaussian": gaussian_out_dir,
     }
 
     return ms
