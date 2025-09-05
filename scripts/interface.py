@@ -17,11 +17,11 @@ class SystemConfigs():
 
     # Operational controller
     enable_stage_align: bool = True
-    enable_stage_refine: bool = False
-    enable_stage_decompose: bool = False
-    enable_stage_segment: bool = False
-    enable_stage_articulate: bool = False
-    enable_stage_bind: bool = False
+    enable_stage_refine: bool = True
+    enable_stage_decompose: bool = True
+    enable_stage_segment: bool = True
+    enable_stage_articulate: bool = True
+    enable_stage_bind: bool = True
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations

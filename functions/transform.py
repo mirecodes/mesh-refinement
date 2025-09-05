@@ -1,135 +1,156 @@
 import os
-
 import numpy as np
 import pymeshlab
 import vedo
+import trimesh
+from plyfile import PlyData, PlyElement
 from json_handler import JsonHandler
-from plyfile import PlyElement, PlyData
-from scipy.spatial.transform import Rotation as R
+
+from functions import calculate_transforms  # apply_transform_from_matrix 사용 안함
 
 
-from functions import calculate_transforms, apply_transform_from_matrix
+# -------- 공통 유틸: R@p + t / R@n --------
+def _apply_Rt_points(P: np.ndarray, Rmat: np.ndarray, tvec: np.ndarray) -> np.ndarray:
+    return (P @ Rmat.T) + tvec
+
+def _apply_R_normals(N: np.ndarray, Rmat: np.ndarray) -> np.ndarray:
+    N2 = (N @ Rmat.T)
+    N2 /= (np.linalg.norm(N2, axis=1, keepdims=True) + 1e-12)
+    return N2
 
 
-def _apply_transform_to_gaussian(gaussian_in_path, gaussian_out_path, matrix_4x4):
-    g_ply = PlyData.read(gaussian_in_path)
-    v = g_ply['vertex']
+# -------- Mesh: pymeshlab 변환 대신 numpy/trimesh로 적용 후 저장 --------
+def _save_mesh_with_matrix(ms_mesh: pymeshlab.Mesh, out_path: str, T4: np.ndarray):
+    V = ms_mesh.vertex_matrix().astype(np.float64)
+    F = ms_mesh.face_matrix().astype(np.int64)
+
+    Rmat = T4[:3, :3].astype(np.float64)
+    tvec = T4[:3, 3].astype(np.float64)
+
+    V2 = _apply_Rt_points(V, Rmat, tvec)
+
+    # normals/colors 있으면 유지 (pymeshlab API 차이를 고려해 방어적 접근)
+    try:
+        vnorm = ms_mesh.vertex_normal_matrix()
+        if vnorm is None or len(vnorm) != len(V):
+            vnorm = None
+    except Exception:
+        vnorm = None
+    if vnorm is not None:
+        vnorm = _apply_R_normals(vnorm.astype(np.float64), Rmat)
+
+    try:
+        vcols = ms_mesh.vertex_color_matrix() if ms_mesh.has_vertex_color() else None
+    except Exception:
+        vcols = None
+    tm = trimesh.Trimesh(vertices=V2, faces=F, process=False)
+
+    if vnorm is not None:
+        tm.vertex_normals = vnorm
+    if vcols is not None:
+        rgb = np.clip(vcols[:, :3] * 255.0, 0, 255).astype(np.uint8)
+        tm.visual.vertex_colors = np.concatenate([rgb, 255*np.ones((rgb.shape[0],1), np.uint8)], axis=1)
+
+    tm.export(out_path)
+
+
+# -------- Gaussian: plyfile로 좌표/노멀만 갱신(모든 필드 보존) --------
+def _apply_transform_to_gaussian(gaussian_in_path: str, gaussian_out_path: str, T4: np.ndarray):
+    ply = PlyData.read(gaussian_in_path)
+    v = ply['vertex']
     names = v.data.dtype.names
 
-    Rmat, Tvec = matrix_4x4[:3, :3], matrix_4x4[:3, 3]
+    Rmat = T4[:3, :3].astype(np.float64)
+    tvec = T4[:3, 3].astype(np.float64)
 
-    # Euler 분해 후 부호 반전
-    rot = R.from_matrix(Rmat)
-    euler = -rot.as_euler('xyz', degrees=True)   # ★ 부호 반전
-    Rxyz = R.from_euler('xyz', euler, degrees=True).as_matrix()
-
-    # 좌표
     if all(k in names for k in ('x','y','z')):
         P = np.stack([v['x'], v['y'], v['z']], axis=1).astype(np.float64)
-        P_new = (P @ Rxyz.T) + Tvec
-        v['x'], v['y'], v['z'] = [P_new[:, i].astype(v['x'].dtype) for i in range(3)]
+        P2 = _apply_Rt_points(P, Rmat, tvec)
+        v['x'] = P2[:, 0].astype(v['x'].dtype)
+        v['y'] = P2[:, 1].astype(v['y'].dtype)
+        v['z'] = P2[:, 2].astype(v['z'].dtype)
 
-    # 노멀
     if all(k in names for k in ('nx','ny','nz')):
         N = np.stack([v['nx'], v['ny'], v['nz']], axis=1).astype(np.float64)
-        N_new = (N @ Rxyz.T)
-        N_new /= (np.linalg.norm(N_new, axis=1, keepdims=True) + 1e-12)
-        v['nx'], v['ny'], v['nz'] = [N_new[:, i].astype(v['nx'].dtype) for i in range(3)]
+        N2 = _apply_R_normals(N, Rmat)
+        v['nx'] = N2[:, 0].astype(v['nx'].dtype)
+        v['ny'] = N2[:, 1].astype(v['ny'].dtype)
+        v['nz'] = N2[:, 2].astype(v['nz'].dtype)
 
-    # 그대로 저장
-    new_vertex = PlyElement.describe(v.data, 'vertex')
-    PlyData([new_vertex], text=False).write(gaussian_out_path)
+    PlyData([PlyElement.describe(v.data, 'vertex')], text=False).write(gaussian_out_path)
 
+
+# -------- 메인 스테이지(기존 골격/인터페이스 유지) --------
 def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
-
-    # load mesh
     mesh = ms.mesh(0)
 
-    # suggested transformation
-    initial_transform = calculate_transforms(ms)
-    apply_transform_from_matrix(ms, initial_transform)
+    # 1) 제안 변환(행렬만 계산; 적용은 우리가 직접)
+    initial_transform = calculate_transforms(ms)  # 4x4
 
-    # prepare mesh visualization
+    # 2) 시각화 & 사용자가 회전 조정 (먼저 initial_transform을 적용한 상태로 보여줌)
     verts = mesh.vertex_matrix()
     faces = mesh.face_matrix()
-    vmesh = vedo.Mesh([verts, faces], alpha=0.5)
+    R0 = initial_transform[:3, :3].astype(np.float64)
+    t0 = initial_transform[:3, 3].astype(np.float64)
+    verts_vis = _apply_Rt_points(verts.astype(np.float64), R0, t0)
+    vmesh = vedo.Mesh([verts_vis, faces], alpha=0.5)
 
-    vcolors = mesh.vertex_color_matrix()[:, :3] * 255 if mesh.has_vertex_color() else None
-    fcolors = mesh.face_color_matrix()[:, :3] * 255 if mesh.has_face_color() else None
-
-    if vcolors is not None:
-        vmesh.pointcolors = vcolors
-    elif fcolors is not None:
-        vmesh.cellcolors = fcolors
+    if mesh.has_vertex_color():
+        vmesh.pointcolors = mesh.vertex_color_matrix()[:, :3] * 255
+    elif mesh.has_face_color():
+        vmesh.cellcolors = mesh.face_color_matrix()[:, :3] * 255
     else:
         vmesh.color("lightblue")
 
     assembly = vedo.Assembly((vmesh,))
-
     bounds = vmesh.bounds()
-    max_bound_length = max(bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4])
-    axis_length = max_bound_length * 0.8
+    max_len = max(bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4])
+    axis_len = max_len * 0.8
 
-    x_axis = vedo.Line([0, 0, 0], [axis_length, 0, 0], c='red', lw=3)
-    y_axis = vedo.Line([0, 0, 0], [0, axis_length, 0], c='green', lw=3)
-    z_axis = vedo.Line([0, 0, 0], [0, 0, axis_length], c='blue', lw=3)
-
-    x_label = vedo.Text3D('X', pos=[axis_length, 0, 0], s=axis_length / 10, c='red')
-    y_label = vedo.Text3D('Y', pos=[0, axis_length, 0], s=axis_length / 10, c='green')
-    z_label = vedo.Text3D('Z', pos=[0, 0, axis_length], s=axis_length / 10, c='blue')
-
-    plane = vedo.Grid(pos=(0, 0, 0), s=(max_bound_length * 1.2, max_bound_length * 1.2), alpha=0.15)
+    axes = [
+        vedo.Line([0,0,0], [axis_len,0,0], c='red', lw=3),
+        vedo.Line([0,0,0], [0,axis_len,0], c='green', lw=3),
+        vedo.Line([0,0,0], [0,0,axis_len], c='blue', lw=3),
+        vedo.Text3D('X', pos=[axis_len,0,0], s=axis_len/10, c='red'),
+        vedo.Text3D('Y', pos=[0,axis_len,0], s=axis_len/10, c='green'),
+        vedo.Text3D('Z', pos=[0,0,axis_len], s=axis_len/10, c='blue'),
+        vedo.Grid(pos=(0,0,0), s=(max_len*1.2, max_len*1.2), alpha=0.15)
+    ]
 
     plt = vedo.Plotter(title="Mesh Transform")
-
-    def key_press_callback(event):
-        if event.keypress == 'e':
-            assembly.rotate_z(-1)
-        elif event.keypress == 'r':
-            assembly.rotate_z(1)
-        elif event.keypress == '\t':
-            pass
-
+    def key_press_callback(e):
+        if e.keypress == 'e': assembly.rotate_z(-1)
+        elif e.keypress == 'r': assembly.rotate_z(1)
     plt.add_callback('KeyPress', key_press_callback)
-    plt.add(assembly, x_axis, y_axis, z_axis, x_label, y_label, z_label, plane)
+    plt.add(assembly, *axes)
     plt.show(interactive=True)
 
-    # apply the user transformation
-    fine_transform = assembly.transform.matrix.T
+    # 3) 사용자 미세조정 행렬 (vedo → 4x4)
+    fine_transform = assembly.transform.matrix.T  # 인터페이스 유지
+    total_T = fine_transform @ initial_transform
 
-    transform = fine_transform @ initial_transform
-    # apply_transform_from_matrix(ms, fine_transform)
+    # 4) 동일 행렬을 mesh/gaussian에 '직접' 적용
+    mesh_out = os.path.join(cfgs.mesh_working_dir, f"transformed_mesh.{cfgs.extension}")
+    _save_mesh_with_matrix(mesh, mesh_out, total_T)
 
-    gaussian_in_dir = cfgs.gaussian_in_dir
-    gaussian_out_dir = os.path.join(cfgs.mesh_working_dir, f"transformed_gaussian.{cfgs.extension}")
-    _apply_transform_to_gaussian(gaussian_in_dir, gaussian_out_dir, initial_transform)
-
-    # save mesh
-    mesh_dir = os.path.join(cfgs.mesh_working_dir, f"transformed_mesh.{cfgs.extension}")
-    # gaussian_dir = os.path.join(cfgs.mesh_working_dir, f"transformed_gaussian.{cfgs.extension}")
-
-    ms.set_current_mesh(0); ms.save_current_mesh(mesh_dir)
-    # ms.set_current_mesh(1); ms.save_current_mesh(gaussian_dir)
-    ms.set_current_mesh(0)
-
-    # TODO: Remove current part later on
-    # R = initial_transform[:3, :3] @ fine_transform[:3, :3]
-    # T = initial_transform[:3, 3]
-    # transform = np.eye(4)
-    # transform[:3, :3] = R
-    # transform[:3, 3] = T
-    # ms = pymeshlab.MeshSet()
-    # ms.load_new_mesh(cfgs.mesh_in_dir)
-    # apply_transform_from_matrix(ms, transform)
-    # ms.save_current_mesh(os.path.join(cfgs.mesh_working_dir, f"test_mesh.ply"))
-
-    # Save intermediate state into the json file
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
+    gaussian_in = getattr(cfgs, 'gaussian_in_dir', None) \
+                  or states.transform.dirs.get('gaussian_source', states.transform.dirs.get('gaussian'))
+    gaussian_out = os.path.join(cfgs.mesh_working_dir, f"transformed_gaussian.{cfgs.extension}")
+    _apply_transform_to_gaussian(gaussian_in, gaussian_out, total_T)
+
+    # 5) 상태 저장
     states.transform = {}
-    states.transform.matrix = transform.tolist()
+    states.transform.matrix = total_T.tolist()
     states.transform.dirs = {
-        "mesh": mesh_dir,
-        "gaussian": gaussian_out_dir,
+        "mesh": mesh_out,
+        "gaussian": gaussian_out,
+        "gaussian_source": gaussian_in,
     }
 
+    # 6) 메모리 정리(반복 실행시)
+    try:
+        vedo.close()
+    except Exception:
+        pass
     return ms

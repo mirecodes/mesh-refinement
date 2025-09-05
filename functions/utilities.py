@@ -140,7 +140,7 @@ def calculate_transforms(ms, verbose=False) -> (np.array, np.array):
     translation_matrix[0:3, 3] = -z_mean
 
     rotation_4x4 = np.eye(4)
-    rotation_4x4[:3, :3] = rotation_matrix.T
+    rotation_4x4[:3, :3] = rotation_matrix
 
     # calculate the forward / inverse se(3) transformation
     forward_transform = translation_matrix @ rotation_4x4
