@@ -887,6 +887,7 @@ def stage_segment(cfgs, ms: pymeshlab.MeshSet):
     joints = build_joints_from_rlps(rlps)
 
     states.segment = {}
+    states.segment.vert_label = vert_label.tolist()
     states.segment.dirs = {}
     states.segment.dirs.mesh = segment_mesh_paths
     states.segment.joints = joints

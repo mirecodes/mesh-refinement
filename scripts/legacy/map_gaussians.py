@@ -1,150 +1,153 @@
 import os
-import glob
-from dataclasses import dataclass, field
-from typing import Optional, Tuple
-
-import trimesh
 import numpy as np
-from plyfile import PlyElement, PlyData
-from trimesh.proximity import ProximityQuery
+import pymeshlab
+import trimesh
+from dataclasses import dataclass
+from scipy.spatial import cKDTree
+from plyfile import PlyData, PlyElement
+from json_handler import JsonHandler
 
+# -------- helpers: 좌표/노멀 추출, 레이 필터, 카테고리 할당 --------
+
+def _get_positions(rec):
+    names = rec.dtype.names or ()
+    if all(k in names for k in ('x','y','z')):
+        return np.stack([rec['x'], rec['y'], rec['z']], axis=1).astype(np.float64)
+    cand = [
+        ('pos_x','pos_y','pos_z'),
+        ('px','py','pz'),
+        ('position_0','position_1','position_2'),
+        ('position0','position1','position2'),
+        ('mean_0','mean_1','mean_2'),
+        ('mu_0','mu_1','mu_2'),
+    ]
+    for a,b,c in cand:
+        if a in names and b in names and c in names:
+            return np.stack([rec[a], rec[b], rec[c]], axis=1).astype(np.float64)
+    for base in ('position','pos','mean','mu'):
+        if f'{base}[0]' in names and f'{base}[1]' in names and f'{base}[2]' in names:
+            return np.stack([rec[f'{base}[0]'], rec[f'{base}[1]'], rec[f'{base}[2]']], axis=1).astype(np.float64)
+    raise KeyError("Cannot find position fields (x,y,z or known aliases).")
+
+def _ensure_normals_any(rec):
+    names = rec.dtype.names or ()
+    if all(k in names for k in ('nx','ny','nz')):
+        n = np.stack([rec['nx'], rec['ny'], rec['nz']], axis=1).astype(np.float64)
+        n /= (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
+        return n
+    def _quat_to_R(q):
+        w,x,y,z = q[...,0], q[...,1], q[...,2], q[...,3]
+        s = np.sqrt(w*w+x*x+y*y+z*z) + 1e-12
+        w,x,y,z = w/s, x/s, y/s, z/s
+        R = np.empty(q.shape[:-1] + (3,3), dtype=np.float64)
+        R[...,0,0] = 1 - 2*(y*y + z*z); R[...,0,1] = 2*(x*y - z*w); R[...,0,2] = 2*(x*z + y*w)
+        R[...,1,0] = 2*(x*y + z*w);     R[...,1,1] = 1 - 2*(x*x + z*z); R[...,1,2] = 2*(y*z - x*w)
+        R[...,2,0] = 2*(x*z - y*w);     R[...,2,1] = 2*(y*z + x*w);     R[...,2,2] = 1 - 2*(x*x + y*y)
+        return R
+    if all(f'rot_{i}' in names for i in range(4)):
+        q = np.stack([rec['rot_0'], rec['rot_1'], rec['rot_2'], rec['rot_3']], axis=1).astype(np.float64)
+        z = np.array([0.0,0.0,1.0]); R = _quat_to_R(q)
+        n = (R @ z).astype(np.float64); n /= (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
+        return n
+    if all(k in names for k in ('qw','qx','qy','qz')):
+        q = np.stack([rec['qw'], rec['qx'], rec['qy'], rec['qz']], axis=1).astype(np.float64)
+        z = np.array([0.0,0.0,1.0]); R = _quat_to_R(q)
+        n = (R @ z).astype(np.float64); n /= (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
+        return n
+    return None  # 노멀 불가 시 정렬/레이 필터 비활성
+
+def _ray_filter(mesh, points, normals, max_len, eps):
+    if normals is None:
+        return np.ones(len(points), dtype=bool)
+    rmi = trimesh.ray.ray_triangle.RayMeshIntersector(mesh)
+    keep = np.zeros(len(points), dtype=bool)
+    batch = 4096
+    for s in range(0, len(points), batch):
+        e = min(len(points), s + batch)
+        o = points[s:e]; n = normals[s:e]
+        for sign in (1.0, -1.0):
+            dirs = n * sign
+            locs, idx_ray, _ = rmi.intersects_location(o, dirs, multiple_hits=False)
+            d = np.full(e - s, np.inf)
+            if len(idx_ray):
+                d[idx_ray] = np.linalg.norm(locs - o[idx_ray], axis=1)
+            keep[s:e] |= (d > eps) & (d < max_len)
+    return keep
+
+def _assign_categories(mesh, vert_labels, gauss_xyz, gauss_n, cfgs):
+    V  = np.asarray(mesh.vertices, dtype=np.float64)
+    VN = np.asarray(mesh.vertex_normals, dtype=np.float64)
+    tree = cKDTree(V)
+    diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]))
+    sigma = max(1e-9, cfgs.sigma_rel * diag)
+    k = max(1, cfgs.k_neighbors)
+    out = np.zeros(len(gauss_xyz), dtype=np.int32)
+    for i, p in enumerate(gauss_xyz):
+        dists, idxs = tree.query(p, k=min(k, len(V)))
+        if np.isscalar(dists): dists = np.array([dists]); idxs = np.array([idxs], dtype=int)
+        w_dist = np.exp(-(dists**2) / (2.0 * sigma * sigma)) * cfgs.w_dist
+        if gauss_n is not None:
+            aligns = np.maximum(0.0, VN[idxs] @ gauss_n[i])
+            w_align = (aligns ** cfgs.align_power) * cfgs.w_align
+        else:
+            w_align = np.ones_like(w_dist)
+        score = w_dist * w_align
+        j = int(idxs[np.argmax(score)]) if np.any(score > 0) else int(idxs[0])
+        out[i] = int(vert_labels[j])
+    return out
+
+# -------- scoring/filter cfg --------
 
 @dataclass
-class SystemConfig:
-    # --------------------------------------------------------------------------
-    # 1. 사용자 정의 설정
-    # --------------------------------------------------------------------------
-    # 분해된 메시 파일들이 있는 경로의 기본 이름
-    # 예: 'out/convex_decomp/refined_bonsai_pot'는
-    # 'refined_bonsai_pot_1.ply', 'refined_bonsai_pot_2.ply', ... 와 매칭됩니다.
-    decomposed_mesh_base_path: str = "out/convex_decomp/refined_spray"
+class BindCfgs:
+    k_neighbors: int = 8
+    sigma_rel: float = 0.02
+    align_power: float = 1.0
+    w_dist: float = 1.0
+    w_align: float = 1.0
+    ray_max_rel: float = 2.0
+    ray_eps: float = 1e-6
+    drop_if_ray_miss: bool = True
+    verbose: bool = True
 
-    # 가우시안 포인트 클라우드 파일 경로
-    gaussian_in_path: str = "data/gaussians/spray_gaussian.ply"
+# -------- main: PlyData 방식 적용(모든 속성 보존 저장) --------
 
-    part_groups: Optional[Tuple[Tuple[int, ...], ...]] = ((1, 2, 3, 4, 5, 7, 8, ), (6, 9, ))
+def stage_bind(cfgs, ms: pymeshlab.MeshSet):
+    os.makedirs(cfgs.gaussian_out_dir, exist_ok=True)
 
-    # 그룹화된 가우시안 포인트를 저장할 출력 디렉토리
-    gaussian_out_dir: str = "../../out/gaussian_parts"
+    states = JsonHandler(cfgs.json_states_dir, auto_save=True)
+    mesh = trimesh.load(states.refine.dirs.mesh)
+    vert_labels = states.segment.vert_label
 
-    # --------------------------------------------------------------------------
-    # 2. 자동 생성 설정 (필요 시 사용)
-    # --------------------------------------------------------------------------
-    root_dir: str = field(default_factory=lambda: os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
-                          init=False)
+    # (핵심) Gaussian은 PlyData로 읽고 vertex 구조체를 그대로 유지
+    g_ply = PlyData.read(states.transform.dirs.gaussian)
+    g_rec = g_ply['vertex'].data
 
-    def __post_init__(self):
-        # 출력 디렉토리가 존재하지 않으면 생성
-        os.makedirs(self.gaussian_out_dir, exist_ok=True)
-        self.decomposed_mesh_base_dir = os.path.join(self.root_dir, self.decomposed_mesh_base_path)
-        self.gaussian_in_dir: str = os.path.join(self.root_dir, self.gaussian_in_path)
+    # 좌표/노멀 안전 추출
+    gauss_xyz = _get_positions(g_rec)
+    gauss_n   = _ensure_normals_any(g_rec)
 
+    cfg = BindCfgs()
 
-def assign_points_to_parts(cfg: SystemConfig):
-    """
-    가우시안 포인트들을 가장 가까운 메시 조각에 할당하고, 원본 데이터 형식을 유지하여 파일로 저장합니다.
-    """
-    # 1. 가우시안 포인트 클라우드 로드
-    # 1a. Trimesh를 사용해 기하학적 위치(vertices) 정보만 로드 (거리 계산용)
-    print(f"Loading Gaussian point cloud from: {cfg.gaussian_in_dir}")
-    try:
-        gaussian_cloud_geom = trimesh.load(cfg.gaussian_in_dir)
-        gaussian_points = gaussian_cloud_geom.vertices
-    except Exception as e:
-        print(f"Error: Failed to load Gaussian geometry with Trimesh. {e}")
-        return
+    # 레이 기반 필터(노멀이 있을 경우에만)
+    diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]))
+    ray_max = cfg.ray_max_rel * diag
+    keep = _ray_filter(mesh, gauss_xyz, gauss_n, ray_max, cfg.ray_eps) if cfg.drop_if_ray_miss else np.ones(len(gauss_xyz), bool)
 
-    # 1b. plyfile을 사용해 모든 속성을 포함한 전체 데이터 로드 (데이터 보존용)
-    try:
-        plydata = PlyData.read(cfg.gaussian_in_dir)
-        vertex_data = plydata['vertex'].data
-        print(f"-> Loaded {len(vertex_data)} points with all attributes.")
-    except Exception as e:
-        print(f"Error: Failed to load full Gaussian data with plyfile. {e}")
-        return
+    # 카테고리 할당
+    assigned = _assign_categories(mesh, vert_labels, gauss_xyz, gauss_n, cfg)
 
-    # 2. 분해된 메시 조각들 로드 (기존과 동일)
-    part_paths = sorted(glob.glob(f"{cfg.decomposed_mesh_base_dir}_*.ply"))
-    if not part_paths:
-        print(f"Error: No decomposed parts found with base path: {cfg.decomposed_mesh_base_dir}")
-        return
-    print(f"Found {len(part_paths)} decomposed mesh parts. Loading...")
-    parts = [trimesh.load(p, force="mesh") for p in part_paths]
-    print("-> All parts loaded.")
-
-    # 3. 거리 계산 및 가장 가까운 그룹 찾기 (기존과 동일)
-    print("Calculating distances from points to each mesh part...")
-    all_distances = []
-    for i, part_mesh in enumerate(parts):
-        prox_query = ProximityQuery(part_mesh)
-        distances = np.abs(prox_query.signed_distance(gaussian_points))
-        all_distances.append(distances)
-        print(f"-> Calculated distances for part {i + 1}/{len(parts)}")
-
-    distances_matrix = np.array(all_distances)
-
-    if cfg.part_groups:
-        print("Processing part groups...")
-        group_distances_list = []
-        for group in cfg.part_groups:
-            group_indices = [p - 1 for p in group]
-            min_dist_to_group = np.min(distances_matrix[group_indices, :], axis=0)
-            group_distances_list.append(min_dist_to_group)
-        final_distances = np.array(group_distances_list)
-        print("-> Group distance calculation complete.")
-    else:
-        print("No groups defined, assigning to individual parts.")
-        final_distances = distances_matrix
-
-    print("Assigning each point to the closest part/group...")
-    closest_indices = np.argmin(final_distances, axis=0)
-    print("-> Assignment complete.")
-
-    # 5. 결과를 그룹화하여 "원본 형식 그대로" 파일로 저장 (수정된 부분)
-    print("Saving grouped Gaussian points while preserving original format...")
-    output_base_name = os.path.splitext(os.path.basename(cfg.gaussian_in_path))[0]
-
-    if cfg.part_groups:
-        # 그룹별로 저장
-        for i, group in enumerate(cfg.part_groups):
-            mask = (closest_indices == i)
-            # 원본의 모든 속성을 포함한 데이터에서 마스크를 사용해 필터링
-            points_for_this_group_data = vertex_data[mask]
-
-            if points_for_this_group_data.shape[0] > 0:
-                # 필터링된 데이터로 새로운 PlyElement 생성
-                # 원본의 데이터 타입과 속성 이름(header)이 그대로 유지됨
-                new_element = PlyElement.describe(points_for_this_group_data, 'vertex')
-
-                # 새로운 PlyData 객체 생성 (binary 형식으로 저장 권장)
-                new_plydata = PlyData([new_element], text=False)
-
-                output_part_number = min(group)
-                out_path = os.path.join(cfg.gaussian_out_dir, f"{output_base_name}_{output_part_number}.ply")
-
-                # plyfile을 사용해 파일 쓰기
-                new_plydata.write(out_path)
-                print(f"Saved {len(points_for_this_group_data)} points for group {group} to: {out_path}")
-            else:
-                print(f"Group {group} has no closest points. Skipping.")
-    else:
-        # 개별 파트별로 저장 (그룹 설정이 없을 경우)
-        for i in range(len(parts)):
-            mask = (closest_indices == i)
-            points_for_this_part_data = vertex_data[mask]
-
-            if points_for_this_part_data.shape[0] > 0:
-                new_element = PlyElement.describe(points_for_this_part_data, 'vertex')
-                new_plydata = PlyData([new_element], text=False)
-                out_path = os.path.join(cfg.gaussian_out_dir, f"{output_base_name}_{i + 1}.ply")
-                new_plydata.write(out_path)
-                print(f"Saved {len(points_for_this_part_data)} points to: {out_path}")
-            else:
-                print(f"Part {i + 1} has no closest points. Skipping.")
-
-    print("\nProcessing finished successfully.")
-
-
-if __name__ == "__main__":
-    config = SystemConfig()
-    assign_points_to_parts(config)
+    # (핵심) 저장: 원본 vertex의 모든 필드/순서/dtype 그대로, 마스크만 적용하여 깔끔 저장
+    cats = np.unique(assigned[keep])
+    base_name = os.path.splitext(os.path.basename(states.transform.dirs.gaussian))[0]
+    for c in cats:
+        idxs = np.nonzero(keep & (assigned == c))[0]
+        if idxs.size == 0:
+            continue
+        sub = g_rec[idxs]  # 원본 구조체 배열 슬라이스(모든 property 그대로)
+        new_vertex = PlyElement.describe(sub, 'vertex')
+        new_ply = PlyData([new_vertex], text=False)  # 예제와 동일한 “깔끔한” 저장 스타일
+        out_path = os.path.join(cfgs.gaussian_out_dir, f"{base_name}_{int(c)}.ply")
+        new_ply.write(out_path)
+        if cfg.verbose:
+            print(f"Saved {len(sub)} points -> {out_path}")
