@@ -16,12 +16,12 @@ class SystemConfigs():
     json_config_path = "configs.json"
 
     # Operational controller
-    enable_stage_align: bool = False
+    enable_stage_align: bool = True
     enable_stage_refine: bool = False
     enable_stage_decompose: bool = False
     enable_stage_segment: bool = False
     enable_stage_articulate: bool = False
-    enable_stage_bind: bool = True
+    enable_stage_bind: bool = False
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
@@ -55,12 +55,15 @@ class SystemConfigs():
         self.mesh_working_dir = os.path.join(self.working_dir, "meshes")
         self.json_configs_dir = os.path.join(self.json_attr_dir, "configs.json")
         self.json_states_dir = os.path.join(self.json_attr_dir, "states.json")
+
         self.urdf_working_dir = os.path.join(self.working_dir, "urdf")
+        self.urdf_out_dir = os.path.join(self.out_dir, "urdf")
+        self.gaussian_out_dir = os.path.join(self.out_dir, "gaussian")
 
         self.mesh_in_dir = os.path.join(self.in_dir, self.fname_mesh)
         self.gaussian_in_dir = os.path.join(self.in_dir, self.fname_gaussian)
-        self.mesh_out_dir = os.path.join(self.out_dir, self.fname_mesh)
-        self.gaussian_out_dir = os.path.join(self.out_dir, self.fname_gaussian)
+        # self.mesh_out_dir = os.path.join(self.out_dir, self.fname_mesh)
+        # self.gaussian_out_dir = os.path.join(self.out_dir, self.fname_gaussian)
 
         # Create directories if necessary
         self.create_directories()
@@ -72,6 +75,8 @@ class SystemConfigs():
             self.json_attr_dir,
             self.mesh_working_dir,
             self.urdf_working_dir,
+            self.urdf_out_dir,
+            self.gaussian_out_dir,
         ]
 
         for path in dirs_to_create:
@@ -82,20 +87,11 @@ class SystemConfigs():
 
 
 def execute_pipeline(cfgs: SystemConfigs):
-
-    # load meshes
-    ms = pymeshlab.MeshSet()
-    try:
-        ms.load_new_mesh(cfgs.mesh_in_dir)
-        ms.load_new_mesh(cfgs.gaussian_in_dir)
-        ms.set_current_mesh(0)
-    except pymeshlab.PyMeshLabException:
-        print(f"[error]: Failed to find mesh in directory. dir={cfgs.in_dir}")
-        raise FileNotFoundError()
+    print("[info]: Execute the object importing pipeline")
 
     if cfgs.enable_stage_align:
         print("[info]: Running the alignment stage")
-        ms = stage_transform(cfgs, ms)
+        stage_transform(cfgs)
     else:
         print("[info]: Loading the aligned meshset")
         ms = load_from_saves(cfgs, 'transform')

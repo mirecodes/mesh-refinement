@@ -5,11 +5,12 @@ import vedo
 import trimesh
 from plyfile import PlyData, PlyElement
 from json_handler import JsonHandler
+from functools import partial
 
-from functions import calculate_transforms  # apply_transform_from_matrix 사용 안함
+from functions import calculate_transforms
 
 
-# -------- 공통 유틸: R@p + t / R@n --------
+# -------- Utility: R@p + t / R@n --------
 def _apply_Rt_points(P: np.ndarray, Rmat: np.ndarray, tvec: np.ndarray) -> np.ndarray:
     return (P @ Rmat.T) + tvec
 
@@ -19,7 +20,7 @@ def _apply_R_normals(N: np.ndarray, Rmat: np.ndarray) -> np.ndarray:
     return N2
 
 
-# -------- Mesh: pymeshlab 변환 대신 numpy/trimesh로 적용 후 저장 --------
+# -------- Save mesh with applied transform --------
 def _save_mesh_with_matrix(ms_mesh: pymeshlab.Mesh, out_path: str, T4: np.ndarray):
     V = ms_mesh.vertex_matrix().astype(np.float64)
     F = ms_mesh.face_matrix().astype(np.int64)
@@ -29,7 +30,7 @@ def _save_mesh_with_matrix(ms_mesh: pymeshlab.Mesh, out_path: str, T4: np.ndarra
 
     V2 = _apply_Rt_points(V, Rmat, tvec)
 
-    # normals/colors 있으면 유지 (pymeshlab API 차이를 고려해 방어적 접근)
+    # Keep normals/colors if available
     try:
         vnorm = ms_mesh.vertex_normal_matrix()
         if vnorm is None or len(vnorm) != len(V):
@@ -54,7 +55,7 @@ def _save_mesh_with_matrix(ms_mesh: pymeshlab.Mesh, out_path: str, T4: np.ndarra
     tm.export(out_path)
 
 
-# -------- Gaussian: plyfile로 좌표/노멀만 갱신(모든 필드 보존) --------
+# -------- Apply transform to Gaussian PLY --------
 def _apply_transform_to_gaussian(gaussian_in_path: str, gaussian_out_path: str, T4: np.ndarray):
     ply = PlyData.read(gaussian_in_path)
     v = ply['vertex']
@@ -80,14 +81,61 @@ def _apply_transform_to_gaussian(gaussian_in_path: str, gaussian_out_path: str, 
     PlyData([PlyElement.describe(v.data, 'vertex')], text=False).write(gaussian_out_path)
 
 
-# -------- 메인 스테이지(기존 골격/인터페이스 유지) --------
-def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
-    mesh = ms.mesh(0)
+# -------- Key input callback --------
+def key_press_callback(e, *, assembly=None, plt=None, angle_step: float = 1.0):
+    """
+    Supported keys:
+      - Z-axis: E(-), R(+)
+      - Y-axis: D(-), F(+)
+      - X-axis: C(-), V(+)
+      - Exit: q, esc
+    Other keys ignored.
+    """
+    key_raw = getattr(e, "keypress", "") or ""
+    k = key_raw.lower()
 
-    # 1) 제안 변환(행렬만 계산; 적용은 우리가 직접)
+    if k in ("q", "esc", "escape"):
+        try:
+            plt.close()
+        except Exception:
+            vedo.close()
+        return
+
+    if k == "e":
+        assembly.rotate_z(-angle_step)
+    elif k == "r":
+        assembly.rotate_z(+angle_step)
+    elif k == "d":
+        assembly.rotate_y(-angle_step)
+    elif k == "f":
+        assembly.rotate_y(+angle_step)
+    elif k == "c":
+        assembly.rotate_x(-angle_step)
+    elif k == "v":
+        assembly.rotate_x(+angle_step)
+    else:
+        return
+
+    try:
+        plt.render()
+    except Exception:
+        pass
+
+
+# -------- Main stage --------
+def stage_transform(cfgs) -> pymeshlab.MeshSet:
+    ms = pymeshlab.MeshSet()
+    try:
+        ms.load_new_mesh(cfgs.mesh_in_dir)
+        ms.load_new_mesh(cfgs.gaussian_in_dir)
+        ms.set_current_mesh(0)
+    except pymeshlab.PyMeshLabException:
+        print(f"[error]: Failed to find mesh. dir={cfgs.in_dir}")
+        raise FileNotFoundError()
+
+    mesh = ms.mesh(0)
     initial_transform = calculate_transforms(ms)  # 4x4
 
-    # 2) 시각화 & 사용자가 회전 조정 (먼저 initial_transform을 적용한 상태로 보여줌)
     verts = mesh.vertex_matrix()
     faces = mesh.face_matrix()
     R0 = initial_transform[:3, :3].astype(np.float64)
@@ -118,18 +166,25 @@ def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
     ]
 
     plt = vedo.Plotter(title="Mesh Transform")
-    def key_press_callback(e):
-        if e.keypress == 'e': assembly.rotate_z(-1)
-        elif e.keypress == 'r': assembly.rotate_z(1)
-    plt.add_callback('KeyPress', key_press_callback)
+
+    # Disable default VTK keybindings
+    try:
+        iren = plt.interactor
+        for _ev in ("KeyPressEvent", "KeyReleaseEvent", "CharEvent"):
+            iren.RemoveObservers(_ev)
+    except Exception:
+        pass
+
+    # Bind external callback with partial
+    handler = partial(key_press_callback, assembly=assembly, plt=plt, angle_step=1.0)
+    plt.add_callback('KeyPress', handler)
+
     plt.add(assembly, *axes)
     plt.show(interactive=True)
 
-    # 3) 사용자 미세조정 행렬 (vedo → 4x4)
-    fine_transform = assembly.transform.matrix  # 인터페이스 유지
+    fine_transform = assembly.transform.matrix
     total_T = fine_transform @ initial_transform
 
-    # 4) 동일 행렬을 mesh/gaussian에 '직접' 적용
     mesh_out = os.path.join(cfgs.mesh_working_dir, f"transformed_mesh.{cfgs.extension}")
     _save_mesh_with_matrix(mesh, mesh_out, total_T)
 
@@ -139,7 +194,6 @@ def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
     gaussian_out = os.path.join(cfgs.mesh_working_dir, f"transformed_gaussian.{cfgs.extension}")
     _apply_transform_to_gaussian(gaussian_in, gaussian_out, total_T)
 
-    # 5) 상태 저장
     states.transform = {}
     states.transform.matrix = total_T.tolist()
     states.transform.dirs = {
@@ -147,7 +201,6 @@ def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
         "gaussian": gaussian_out,
     }
 
-    # 6) 메모리 정리(반복 실행시)
     try:
         vedo.close()
     except Exception:
