@@ -126,7 +126,7 @@ def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
     plt.show(interactive=True)
 
     # 3) 사용자 미세조정 행렬 (vedo → 4x4)
-    fine_transform = assembly.transform.matrix.T  # 인터페이스 유지
+    fine_transform = assembly.transform.matrix  # 인터페이스 유지
     total_T = fine_transform @ initial_transform
 
     # 4) 동일 행렬을 mesh/gaussian에 '직접' 적용
@@ -145,7 +145,6 @@ def stage_transform(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
     states.transform.dirs = {
         "mesh": mesh_out,
         "gaussian": gaussian_out,
-        "gaussian_source": gaussian_in,
     }
 
     # 6) 메모리 정리(반복 실행시)

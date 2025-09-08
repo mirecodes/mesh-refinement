@@ -10,6 +10,20 @@ from plyfile import PlyData, PlyElement
 
 # --- minimal helpers (kept) ---------------------------------------------------
 
+from scipy.spatial import cKDTree
+
+def _assign_categories_proximity(mesh, vert_labels, gauss_xyz):
+    """
+    노말/가우시안 스코어링 없이, 가장 가까운 mesh vertex의 label로 소속을 결정.
+    """
+    V = np.asarray(mesh.vertices, dtype=np.float64)
+    tree = cKDTree(V)
+    # 각 가우시안에 대해 최근접 정점 하나(k=1)
+    dists, idxs = tree.query(gauss_xyz, k=1)
+    # vert_labels[idxs] 그대로 반환
+    return np.asarray(vert_labels, dtype=np.int32)[idxs]
+
+
 def _ray_filter(mesh, points, normals, max_len, eps):
     if normals is None:
         return np.ones(len(points), dtype=bool)
@@ -77,12 +91,10 @@ def _get_positions(rec):
 
 def _ensure_normals_any(rec):
     names = rec.dtype.names or ()
-    # case 1: explicit nx,ny,nz
     if all(k in names for k in ('nx','ny','nz')):
         n = np.stack([rec['nx'], rec['ny'], rec['nz']], axis=1).astype(np.float64)
         n /= (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
         return n
-    # case 2: quaternion -> z-axis as normal
     def _quat_to_R(q):
         w,x,y,z = q[...,0], q[...,1], q[...,2], q[...,3]
         s = np.sqrt(w*w+x*x+y*y+z*z) + 1e-12
@@ -100,13 +112,13 @@ def _ensure_normals_any(rec):
         return R
     if all(f'rot_{i}' in names for i in range(4)):
         q = np.stack([rec['rot_0'], rec['rot_1'], rec['rot_2'], rec['rot_3']], axis=1).astype(np.float64)
-        R = _quat_to_R(q); z = np.array([0.0,0.0,1.0])
-        n = (R @ z).astype(np.float64); n /= (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
+        Rm = _quat_to_R(q); z = np.array([0.0,0.0,1.0])
+        n = (Rm @ z).astype(np.float64); n /= (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
         return n
     if all(k in names for k in ('qw','qx','qy','qz')):
         q = np.stack([rec['qw'], rec['qx'], rec['qy'], rec['qz']], axis=1).astype(np.float64)
-        R = _quat_to_R(q); z = np.array([0.0,0.0,1.0])
-        n = (R @ z).astype(np.float64); n /= (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
+        Rm = _quat_to_R(q); z = np.array([0.0,0.0,1.0])
+        n = (Rm @ z).astype(np.float64); n /= (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
         return n
     return None
 
@@ -115,14 +127,18 @@ def _slice_vertex_in_ply(ply: PlyData, idxs):
     for el in ply.elements:
         if el.name == 'vertex':
             names = el.data.dtype.names
-            sliced = np.empty(len(idxs), dtype=el.data.dtype)
+            sliced = np.empty(len(idxs), dtype=el.data.dtype)  # dtype 그대로 유지 → 모든 필드/타입 보존
             for n in names:
                 sliced[n] = el.data[n][idxs]
             new_el = PlyElement.describe(sliced, 'vertex')
             new_elements.append(new_el)
         else:
-            new_elements.append(el)  # keep other elements as-is (faces, etc.)
-    new_ply = PlyData(new_elements, text=False)
+            # vertex 외 element(예: face, custom element)는 그대로 유지
+            new_elements.append(el)
+
+    # 🔧 변경점: 원본의 text/binary 모드와 byte_order를 그대로 사용
+    new_ply = PlyData(new_elements, text=ply.text)
+    new_ply.byte_order = ply.byte_order
     new_ply.comments = list(ply.comments)
     new_ply.obj_info = list(ply.obj_info)
     return new_ply
@@ -162,18 +178,31 @@ def stage_bind(cfgs, ms: pymeshlab.MeshSet):
     bind_cfgs = BindCfgs()
 
     # Filter by normal-ray exit (if normals available)
-    diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]))
-    ray_max = bind_cfgs.ray_max_rel * diag
-    keep = _ray_filter(mesh, gauss_xyz, gauss_n, ray_max, bind_cfgs.ray_eps) if bind_cfgs.drop_if_ray_miss else np.ones(len(gauss_xyz), bool)
+    # diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]))
+    # ray_max = bind_cfgs.ray_max_rel * diag
+    # keep = _ray_filter(mesh, gauss_xyz, gauss_n, ray_max, bind_cfgs.ray_eps) if bind_cfgs.drop_if_ray_miss else np.ones(len(gauss_xyz), bool)
+    #
+    # # Assign categories (distance + normal alignment)
+    # assigned = _assign_categories(mesh, vert_labels, gauss_xyz, gauss_n, bind_cfgs)
 
-    # Assign categories (distance + normal alignment)
-    assigned = _assign_categories(mesh, vert_labels, gauss_xyz, gauss_n, bind_cfgs)
+    # ==== (변경) ray 필터 완전 비활성화 ====
+    keep = np.ones(len(gauss_xyz), dtype=bool)
+    if bind_cfgs.verbose:
+        print(f"[ray] disabled — keeping all {len(gauss_xyz)} points")
+
+    # ==== (변경) proximity 기반 카테고리 배정 ====
+    assigned = _assign_categories_proximity(mesh, vert_labels, gauss_xyz)
+    if bind_cfgs.verbose:
+        uniq, cnts = np.unique(assigned, return_counts=True)
+        print("[assign-proximity] category counts:", dict(zip(uniq.tolist(), cnts.tolist())))
 
     # Save per-category with ALL original fields/elements preserved
     cats = np.unique(assigned[keep])
+    print(cats)
     for c in cats:
         idxs = np.nonzero(keep & (assigned == c))[0]
         if idxs.size == 0:
             continue
         out_path = os.path.join(cfgs.gaussian_out_dir, f"gaussian_{int(c)}.ply")
+        print(f"Writing {out_path}")
         _slice_vertex_in_ply(g_ply, idxs).write(out_path)
