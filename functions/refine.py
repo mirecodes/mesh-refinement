@@ -2,140 +2,158 @@ from dataclasses import dataclass, field
 import os
 import pymeshlab
 import trimesh
-from json_handler import JsonHandler
 from pymeshlab import PercentageValue
+from json_handler import JsonHandler
 
 from functions import repair_mesh, flatten_bottom_hole, fill_bottom_hole
 
 
 @dataclass
 class RefinementConfig:
-    # Detailed parameters information
-    # https://pymeshlab.readthedocs.io/en/latest/filter_list.html
+    """
+    Centralizes all ms.* call parameters.
+    """
+    params: dict = field(default_factory=lambda: {
+        # 1) cleaning / components
+        "meshing_remove_connected_component_by_diameter": {
+            "mincomponentdiag": PercentageValue(20.0),
+        },
+        # 2) reconstruction
+        "generate_surface_reconstruction_screened_poisson": {
+            "depth": 10,
+            "fulldepth": 8,
+            # 'cgdepth': 0,
+            # 'scale': 1.1,
+            # 'samplespernode': 1.5,
+            # 'pointweight': 4,
+            # 'iters': 8,
+            # 'confidence': False,
+            # 'preclean': True,
+            # 'threads': 16,
+        },
+        # 3) vertex selection (cut)
+        "compute_selection_by_condition_per_vertex": {
+            "condselect": "(z < -1e-6)",
+        },
+        # 4) decimation
+        "meshing_decimation_quadric_edge_collapse": {
+            "targetfacenum": 20000,
+            "preservenormal": False,
+        },
+        # 5) remeshing
+        "meshing_isotropic_explicit_remeshing": {
+            "targetlen": PercentageValue(1.0),
+            # 'iterations': 10,
+            # 'adaptive': False,
+            # 'selectedonly': False,
+            # 'featuredeg': 30.0,
+            # 'checksurfdist': True,
+            # 'maxsurfdist': PercentageValue(1.0),
+            # 'splitflag': True,
+            # 'collapseflag': True,
+            # 'swapflag': True,
+            # 'smoothflag': True,
+            # 'reprojectflag': True,
+        },
+        # 6) close holes
+        "meshing_close_holes": {
+            "maxholesize": 10000,
+        },
+        # 7) attribute transfer
+        "transfer_attributes_per_vertex": {
+            "sourcemesh": 1,
+            "targetmesh": 0,
+            "vertexsampling": False,
+            "geomtransfer": False,
+            "normaltransfer": True,
+            "colortransfer": True,
+            "upperbound": PercentageValue(5.0),
+        },
+    })
 
-    screened_poisson_params = {
-        # 'visiblelayer': False,
-        'depth': 10,
-        'fulldepth': 8,
-        # 'cgdepth': 0,
-        # 'scale': 1.1,
-        # 'samplespernode': 1.5,
-        # 'pointweight': 4,
-        # 'iters': 8,
-        # 'confidence': False,
-        # 'preclean': True,
-        # 'threads': 16,
-    }
-    cutoff_params = {
-        'condselect': '(z < -1e-6)',
-    }
 
-    edge_collapse_params = {
-        'targetfacenum': 20000,
-        # 'targetperc': 0.0,
-        # 'qualitythr': 0.3,
-        # 'preserveboundary': False,
-        # 'boundaryweight': 1.0,
-        'preservenormal': False,
-        # 'preservetopology': False,
-        # 'optimalplacement': True,
-        # 'planarquadric': True,
-        # 'planarweight': 0.001,
-        # 'qualityweight': False,
-        # 'autoclean': True,
-        # 'selected': False,
-    }
-
-    remshing_params = {
-        # 'iterations': 10,
-        # 'adaptive': False,
-        # 'selectedonly': False,
-        'targetlen': pymeshlab.PercentageValue(1.0), # percentage value
-        # 'featuredeg': 30.0,
-        # 'checksurfdist': True,
-        # 'maxsurfdist': pymeshlab.PercentageValue(1.0), # percentage value
-        # 'splitflag': True,
-        # 'collapseflag': True,
-        # 'swapflag': True,
-        # 'smoothflag': True,
-        # 'reprojectflag': True,
-    }
-
-def stage_refine(cfgs, ms: pymeshlab.MeshSet) -> pymeshlab.MeshSet:
-
+def stage_refine(cfgs):
+    # Load configurations
     refCfgs = RefinementConfig()
+    states = JsonHandler(cfgs.json_states_dir, auto_save=False)
+
+    # Load meshes
+    ms = pymeshlab.MeshSet()
+    mesh_in_dir = states.transform.dirs.mesh
+    ms.load_new_mesh(mesh_in_dir)
+    ms.load_new_mesh(mesh_in_dir)
+    ms.set_current_mesh(0)
 
     # --------------------------------------------------------------------------
     # Mesh Refinement Process
     # --------------------------------------------------------------------------
 
-    # Initial cleaning
-    ms.meshing_remove_connected_component_by_diameter(mincomponentdiag=pymeshlab.PercentageValue(20.0))
+    # 1) Cleaning: remove small connected components
+    ms.meshing_remove_connected_component_by_diameter(
+        **refCfgs.params["meshing_remove_connected_component_by_diameter"]
+    )
 
-    # Reconstruction: Screened Poisson Surface Reconstruction
-    ms.generate_surface_reconstruction_screened_poisson(**refCfgs.screened_poisson_params)
+    # 2) Reconstruction: Screened Poisson
+    ms.generate_surface_reconstruction_screened_poisson(
+        **refCfgs.params["generate_surface_reconstruction_screened_poisson"]
+    )
 
-    # Cut vertices
-    ms.compute_selection_by_condition_per_vertex(**refCfgs.cutoff_params)
+    # 3) Vertex selection (cut-off)
+    ms.compute_selection_by_condition_per_vertex(
+        **refCfgs.params["compute_selection_by_condition_per_vertex"]
+    )
     if ms.current_mesh().selected_vertex_number() > 0:
         ms.meshing_remove_selected_vertices()
 
-    # Mesh simplification
-    ms.meshing_decimation_quadric_edge_collapse(**refCfgs.edge_collapse_params)
-    ms.meshing_isotropic_explicit_remeshing(**refCfgs.remshing_params)
+    # 4) Decimation (edge collapse)
+    ms.meshing_decimation_quadric_edge_collapse(
+        **refCfgs.params["meshing_decimation_quadric_edge_collapse"]
+    )
 
-    # AUX: mesh recovery
+    # 5) Remeshing (isotropic explicit)
+    ms.meshing_isotropic_explicit_remeshing(
+        **refCfgs.params["meshing_isotropic_explicit_remeshing"]
+    )
+
+    # AUX: recovery
     repair_mesh(ms)
 
     # Infill bottom occlusion
     ms = flatten_bottom_hole(ms, target_z=0.0)
     ms = fill_bottom_hole(ms)
 
-    # AUX: mesh recovery
+    # AUX: recovery
     repair_mesh(ms)
 
-    # Infill small holes
-    ms.meshing_close_holes(maxholesize=5000)
-
-    # AUX: mesh recovery
-    repair_mesh(ms)
-
-    # Restore the vertex colors
-    try:
-        ms.load_new_mesh(cfgs.mesh_in_dir)
-        ms.set_current_mesh(0)
-    except pymeshlab.PyMeshLabException:
-        print(f"[error]: Failed to find mesh in directory. dir={cfgs.in_dir}")
-        raise FileNotFoundError()
-
-    ms.transfer_attributes_per_vertex(
-        sourcemesh=2,
-        targetmesh=0,
-        vertexsampling=False,
-        geomtransfer=False,
-        normaltransfer=False,
-        colortransfer=True,
-        upperbound=PercentageValue(5.0),
+    # 6) Close holes
+    ms.meshing_close_holes(
+        **refCfgs.params["meshing_close_holes"]
     )
 
-    ms.set_current_mesh(2)
+    # AUX: recovery
+    repair_mesh(ms)
+
+    # 7) Restore vertex colors (attribute transfer)
+    ms.load_new_mesh(mesh_in_dir)
+    ms.set_current_mesh(0)
+
+    ms.transfer_attributes_per_vertex(
+        **refCfgs.params["transfer_attributes_per_vertex"]
+    )
+
+    ms.set_current_mesh(1)
     ms.delete_current_mesh()
     ms.set_current_mesh(0)
 
     # --------------------------------------------------------------------------
     # Save the Refined Mesh
     # --------------------------------------------------------------------------
+    mesh_out_dir = os.path.join(cfgs.mesh_working_dir, f"refined_mesh.{cfgs.extension}")
+    ms.save_current_mesh(mesh_out_dir)
 
-    mesh_dir = os.path.join(cfgs.mesh_working_dir, f"refined_mesh.{cfgs.extension}")
-
-    ms.set_current_mesh(0)
-    ms.save_current_mesh(mesh_dir)
-
-    # Save intermediate state into the json file
+    # Save intermediate state into JSON
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
     states.refine = {}
-    states.refine.dirs = {
-        "mesh": mesh_dir,
-    }
+    states.refine.dirs = {"mesh": mesh_out_dir}
 
-    return ms
+    return

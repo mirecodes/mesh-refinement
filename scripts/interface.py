@@ -17,7 +17,7 @@ class SystemConfigs():
 
     # Operational controller
     enable_stage_align: bool = True
-    enable_stage_refine: bool = False
+    enable_stage_refine: bool = True
     enable_stage_decompose: bool = False
     enable_stage_segment: bool = False
     enable_stage_articulate: bool = False
@@ -98,7 +98,7 @@ def execute_pipeline(cfgs: SystemConfigs):
 
     if cfgs.enable_stage_refine:
         print("[info]: Running the refinement stage")
-        ms = stage_refine(cfgs, ms)
+        stage_refine(cfgs)
     else:
         print("[info]: Loading the refined meshset")
         ms = load_from_saves(cfgs, 'refine')
