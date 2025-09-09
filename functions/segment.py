@@ -9,7 +9,7 @@ import trimesh
 import vedo
 
 from json_handler import JsonHandler
-from functions.estimate import learn_separator_main
+from functions.estimate import learn_separator_main, _trimesh_list_to_vedo_mesh
 from functions.graphs import cluster_reciprocal_loop_pairs, classify_vertices, build_adjacency_graph
 
 
@@ -713,8 +713,233 @@ def visualize_and_select_vectors_for_rlps(rlps: List[dict],
         plt_rlp.show([mesh_actor, *part_actors, *vec_actors], interactive=True).close()
 
 
-import numpy as np
-import vedo
+# =============================================================================
+# Link-pair vector selection (new)
+# =============================================================================
+from collections import defaultdict as _dd
+
+def build_link_map(rlps: List[dict]) -> Dict[Tuple[int, int], List[int]]:
+    """(i,j)(i<j) -> indices of RLPs connecting the two parts."""
+    link_map: Dict[Tuple[int, int], List[int]] = _dd(list)
+    for idx, r in enumerate(rlps):
+        p = int(r.get("a", {}).get("parent", r.get("parent", -1)))
+        c = int(r.get("a", {}).get("child",  r.get("child",  -1)))
+        if p < 0 or c < 0 or p == c:
+            continue
+        key = (p, c) if p < c else (c, p)
+        link_map[key].append(idx)
+    return link_map
+
+
+def _pick_normal_from_rlp(rlp: dict) -> np.ndarray | None:
+    """Try linear plane normal, then PCA normal."""
+    try:
+        plane = rlp.get("linear", {}).get("plane", None)
+        if plane and len(plane) >= 1 and len(plane[0]) >= 1:
+            n = np.asarray(plane[0][0], dtype=float)
+            if np.isfinite(n).all() and np.linalg.norm(n) > 1e-12:
+                return normalize(n)
+    except Exception:
+        pass
+    n = np.asarray(rlp.get("pca_normal", None), dtype=float) if rlp.get("pca_normal", None) is not None else None
+    if n is None or not np.isfinite(n).all() or np.linalg.norm(n) < 1e-12:
+        return None
+    return normalize(n)
+
+
+def _closest_points_between_lines(p1: np.ndarray, d1: np.ndarray,
+                                  p2: np.ndarray, d2: np.ndarray):
+    """Closest points on two (p+t d) lines; returns q1,q2,dist."""
+    p1 = np.asarray(p1, dtype=float); d1 = normalize(d1)
+    p2 = np.asarray(p2, dtype=float); d2 = normalize(d2)
+    r = p1 - p2
+    a = 1.0
+    b = float(np.dot(d1, d2))
+    c = 1.0
+    d = float(np.dot(d1, r))
+    e = float(np.dot(d2, r))
+    den = a*c - b*b
+    if abs(den) < 1e-12:
+        s = e / (c if c > 1e-30 else 1.0)
+        q1 = p1
+        q2 = p2 + s * d2
+    else:
+        t = (b*e - c*d) / den
+        s = (a*e - b*d) / den
+        q1 = p1 + t * d1
+        q2 = p2 + s * d2
+    dist = float(np.linalg.norm(q1 - q2))
+    return q1, q2, dist
+
+
+def _augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
+    """Add a pair-level vector suggestion into each RLP in the group."""
+    if len(group_indices) < 2:
+        return
+
+    centers, normals, weights = [], [], []
+    for i in group_indices:
+        r = rlps[i]
+        ctr = np.asarray(r.get("center", None), dtype=float)
+        nrm = _pick_normal_from_rlp(r)
+        if ctr is None or ctr.size != 3 or not np.isfinite(ctr).all():
+            continue
+        centers.append(ctr); normals.append(nrm)
+        loop_idx = r.get("loop", [])
+        w = int(len(loop_idx)) if loop_idx is not None else 1  # weight by loop size
+        weights.append(max(w, 1))
+
+    if len(centers) < 2:
+        return
+
+    # case: exactly 2 RLPs
+    if len(group_indices) == 2:
+        c1, c2 = centers[0], centers[1]
+        n1 = normals[0] if normals[0] is not None else normalize(c2 - c1)
+        n2 = normals[1] if normals[1] is not None else normalize(c1 - c2)
+        q1, q2, dist = _closest_points_between_lines(c1, n1, c2, n2)
+        if dist < 1e-6:
+            start = q1
+            dirv = normalize(c2 - c1) if np.linalg.norm(c2 - c1) > 1e-12 else normalize((n1 or 0)+(n2 or 0))
+        else:
+            start = 0.5 * (q1 + q2)
+            seg   = q2 - q1
+            dirv  = normalize(seg) if np.linalg.norm(seg) > 1e-12 else normalize(c2 - c1)
+        vec = {"center": start.astype(float).tolist(), "n": dirv.astype(float).tolist(),
+               "state": "None", "source": "pair2"}
+        for i in group_indices:
+            rlps[i].setdefault("vectors", [])
+            rlps[i]["vectors"].append(dict(vec))
+        return
+
+    # case: 3+ RLPs → weighted mean center, averaged (sign-aligned) normal
+    w = np.asarray(weights, dtype=float); W = float(w.sum())
+    C = np.vstack(centers)
+    start = (w[:, None] * C).sum(axis=0) / max(W, 1e-12)
+    Ns = [n for n in normals if n is not None]
+    if Ns:
+        N = np.vstack(Ns)
+        ref = N[0]
+        for k in range(len(N)):
+            if np.dot(N[k], ref) < 0: N[k] = -N[k]
+        navg = normalize(N.sum(axis=0))
+    else:
+        X = C - C.mean(axis=0)
+        try:
+            _, _, Vt = np.linalg.svd(X, full_matrices=False)
+            navg = normalize(Vt[0])
+        except np.linalg.LinAlgError:
+            navg = normalize(centers[-1] - centers[0])
+
+    vec = {"center": start.astype(float).tolist(), "n": navg.astype(float).tolist(),
+           "state": "None", "source": "pairN"}
+    for i in group_indices:
+        rlps[i].setdefault("vectors", [])
+        rlps[i]["vectors"].append(dict(vec))
+
+
+def augment_vectors_for_pairs_with_map(rlps: List[dict], min_count: int = 2) -> None:
+    """Add pair-level suggestions only when an (i,j) pair has ≥ min_count RLPs."""
+    link_map = build_link_map(rlps)
+    for _, idxs in link_map.items():
+        if len(idxs) >= min_count:
+            _augment_for_group(rlps, idxs)
+
+
+def on_link_vector_click(event, *, catalog, rlps, click_counter):
+    """
+    catalog: actor -> (rlp_idx, vec_idx)
+    Toggle None → Revolute → Prismatic → None; record first selection order.
+    """
+    act = getattr(event, "actor", None)
+    if act is None or act not in catalog:
+        return
+    (ri, vi) = catalog[act]
+    st = getattr(act, "vec_state", "None")
+
+    if st == "None":
+        try: act.c("yellow").alpha(1.0)
+        except Exception: pass
+        setattr(act, "vec_state", "Revolute")
+        rlps[ri]["vectors"][vi]["state"] = "Revolute"
+        click_counter['count'] = int(click_counter.get('count', 0)) + 1
+        rlps[ri]["vectors"][vi]["order"] = int(click_counter['count'])
+    elif st == "Revolute":
+        try: act.c("blue").alpha(1.0)
+        except Exception: pass
+        setattr(act, "vec_state", "Prismatic")
+        rlps[ri]["vectors"][vi]["state"] = "Prismatic"
+    else:
+        try: act.c("gray").alpha(0.6)
+        except Exception: pass
+        setattr(act, "vec_state", "None")
+        rlps[ri]["vectors"][vi]["state"] = "None"
+        rlps[ri]["vectors"][vi]["order"] = None
+    try: event.plotter.render()
+    except Exception: pass
+
+
+def visualize_and_select_vectors_for_links(rlps: List[dict],
+                                           parts: List[trimesh.Trimesh],
+                                           categories: List[List[trimesh.Trimesh]],
+                                           verts: np.ndarray,
+                                           faces: np.ndarray) -> None:
+    """
+    One UI per link pair (i,j): show all vectors from all RLPs in that pair.
+    Selecting different centers will create separate joints later.
+    """
+    link_map = build_link_map(rlps)
+    if not link_map:
+        return
+
+    seg_len = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))) * 0.2
+
+    for (i, j), rlp_indices in link_map.items():
+        mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.3)
+        try: mesh_actor.pickable(False)
+        except Exception: pass
+
+        # two parts (i, j)
+        part_colors = [(0.85, 0.2, 0.2), (0.2, 0.4, 0.85)]
+        part_actors = []
+        for idx_part, col in zip((i, j), part_colors):
+            vm = _trimesh_list_to_vedo_mesh(categories[idx_part])
+            if vm is not None:
+                vm.c(col).alpha(0.35).lw(0.5)
+                try: vm.pickable(False)
+                except Exception: pass
+                part_actors.append(vm)
+
+        # gather & draw vectors for this pair
+        catalog = {}  # actor -> (rlp_idx, vec_idx)
+        vec_actors = []
+        for ri in rlp_indices:
+            rlp = rlps[ri]
+            for vi, v in enumerate(rlp.get("vectors", []) or []):
+                c = np.asarray(v.get("center", rlp.get("center", [0, 0, 0])), dtype=float)
+                n = normalize(np.asarray(v.get("n"), dtype=float))
+                if not np.isfinite(n).all() or np.linalg.norm(n) < 1e-12:
+                    continue
+                p0, p1 = c, c + seg_len * n
+                try:
+                    a = vedo.Arrow(p0, p1, shaftRadius=seg_len * 0.02).c("gray").alpha(0.9)
+                except TypeError:
+                    try:
+                        a = vedo.Tube([p0, p1], r=seg_len * 0.02, cap=True).c("gray").alpha(0.9)
+                    except Exception:
+                        a = vedo.Line(p0, p1).c("gray").alpha(0.9).lw(8)
+                setattr(a, "vec_state", v.get("state", "None"))
+                catalog[a] = (ri, vi)
+                vec_actors.append(a)
+
+        click_counter = {'count': 0}
+        plt_link = vedo.Plotter(title=f"Link ({i},{j}) — pick vectors (click to toggle)", axes=1)
+        plt_link.add_callback(
+            "LeftButtonPress",
+            partial(on_link_vector_click, catalog=catalog, rlps=rlps, click_counter=click_counter)
+        )
+        plt_link.show([mesh_actor, *part_actors, *vec_actors], interactive=True).close()
+
 
 # =============================================================================
 # Stage (entry point)
@@ -785,7 +1010,10 @@ def stage_segment(cfgs):
     prepare_vectors_for_rlps(rlps)
 
     # Vector selection UI
-    visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces)
+    # visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces)
+    augment_vectors_for_pairs_with_map(rlps, min_count=2)  # 같은 링크 페어에 RLP가 2개 이상일 때만 보강 벡터 추가
+    visualize_and_select_vectors_for_links(rlps, parts, categories, verts, faces)  # 페어 단위 UI
+
 
     # Save state & per-link meshes
     seg_dir = os.path.join(os.path.dirname(cfgs.json_states_dir), "segment_mesh")
