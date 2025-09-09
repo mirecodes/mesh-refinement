@@ -235,119 +235,162 @@ def filter_proximal_vertices(
     return idxs, dist
 
 
+from collections import deque, defaultdict
 from typing import List
 import numpy as np
 
-from typing import List, Tuple
+from collections import deque, defaultdict
+from typing import List, Tuple, Iterable
 import numpy as np
 
 def segregate_loops(adj: List[List[int]], boundary_indices: np.ndarray) -> List[np.ndarray]:
     """
-    Extract only closed boundary loops.
-    - 경계 그래프에서 차수 < 2인 정점을 반복 제거해 스퍼(branch) 제거 (2-core).
-    - 시작점으로 되돌아오는 경우만 루프로 인정.
-    - 중간 다른 visited 정점에 닿는 경우는 루프로 취급하지 않음.
-    - 결과는 길이 내림차순 정렬 (main loop이 항상 loops[0]).
+    Extract boundary loops robustly:
+      1) Build boundary subgraph (+ optional 2-core peel)
+      2) Enumerate simple cycles (no edge consumption)
+      3) Select long, low-overlap cycles (greedy by length & new-edge coverage)
+    Return loops sorted by descending length.
     """
-    B = set(map(int, np.asarray(boundary_indices, dtype=int).ravel().tolist()))
+    # -------------------- local toggles --------------------
+    PEEL_CORE          = True     # remove deg<2 iteratively
+    DETERMINISTIC      = True     # sorted neighbors
+    MIN_LEN            = 4        # drop tiny loops (e.g., triangles)
+    MIN_NEW_EDGE_FRAC  = 0.5      # keep a cycle only if ≥50% edges are new vs. already selected
+    # -------------------------------------------------------
+
+    B = set(map(int, np.asarray(boundary_indices, dtype=int).ravel()))
     if not B:
         return []
 
-    # Build boundary-only neighbor map and undirected edge set (u < v)
+    # boundary-only neighbors & undirected edges
     bneigh = {u: [] for u in B}
-    edges = set()
+    edges: set[tuple[int, int]] = set()
     for u in B:
         for v in adj[u]:
             if v in B and v != u:
                 bneigh[u].append(v)
                 a, b = (u, v) if u < v else (v, u)
                 edges.add((a, b))
-
     if not edges:
         return []
 
-    # ---- 1) Peel to the 2-core: remove vertices with degree < 2 iteratively
-    deg = {u: len(bneigh[u]) for u in B}
-    alive = {u: True for u in B}
-    q = deque([u for u in B if deg[u] < 2])
+    # (optional) 2-core peel to remove spurs
+    if PEEL_CORE:
+        deg = {u: len(bneigh[u]) for u in B}
+        alive = {u: True for u in B}
+        q = deque([u for u in B if deg[u] < 2])
+        while q:
+            u = q.popleft()
+            if not alive[u]:
+                continue
+            alive[u] = False
+            for v in list(bneigh[u]):
+                e = (u, v) if u < v else (v, u)
+                edges.discard(e)
+                if u in bneigh[v]:
+                    bneigh[v].remove(u)
+                deg[v] -= 1
+                if alive[v] and deg[v] == 1:
+                    q.append(v)
+            bneigh[u].clear()
+        coreV = {u for u in B if alive[u]}
+        if not coreV or not edges:
+            return []
+    else:
+        coreV = B
 
-    while q:
-        u = q.popleft()
-        if not alive[u]:
-            continue
-        alive[u] = False
-        for v in list(bneigh[u]):
-            a, b = (u, v) if u < v else (v, u)
-            edges.discard((a, b))
-            if u in bneigh[v]:
-                bneigh[v].remove(u)
-            deg[v] -= 1
-            if alive[v] and deg[v] == 1:
-                q.append(v)
-        bneigh[u].clear()
-
-    core_vertices = {u for u in B if alive[u]}
-    if not core_vertices or not edges:
-        return []
-
-    # Rebuild adjacency for core edges
+    # core adjacency from remaining edges
     core_adj = defaultdict(list)
     for a, b in list(edges):
-        if a in core_vertices and b in core_vertices:
+        if a in coreV and b in coreV:
             core_adj[a].append(b)
             core_adj[b].append(a)
         else:
             edges.discard((a, b))
-
     if not edges:
         return []
+    if DETERMINISTIC:
+        for u in core_adj:
+            core_adj[u].sort()
 
-    def edge_exists(u: int, v: int) -> bool:
-        x, y = (u, v) if u < v else (v, u)
-        return (x, y) in edges
+    def ekey(u: int, v: int) -> Tuple[int, int]:
+        return (u, v) if u < v else (v, u)
 
-    def discard_edge(u: int, v: int) -> None:
-        x, y = (u, v) if u < v else (v, u)
-        edges.discard((x, y))
+    # ---------- 1) enumerate simple cycles (Paton-style, undirected) ----------
+    # Rule to avoid duplicates:
+    #  - root at u, only start with neighbors v where v > u
+    #  - during DFS, only push next w with w >= u and w not in path (no immediate back edges to smaller ids)
+    #  - when we hit w == u and path length >= 3 -> record one cycle
+    # Canonicalize each cycle (rotate to min id, choose direction) and dedup via a set.
+    nodes = sorted(core_adj.keys())
+    seen_cycles: set[Tuple[int, ...]] = set()
+    cycles: list[list[int]] = []
 
-    loops: List[np.ndarray] = []
+    def canonical_cycle(cyc: list[int]) -> Tuple[int, ...]:
+        # remove duplicate end if present
+        if len(cyc) >= 2 and cyc[0] == cyc[-1]:
+            cyc = cyc[:-1]
+        m = min(cyc)
+        idxs = [i for i, v in enumerate(cyc) if v == m]
+        best = None
+        for i0 in idxs:
+            # forward
+            fwd = cyc[i0:] + cyc[:i0]
+            # backward
+            bwd = list(reversed(cyc[i0:] + cyc[:i0]))
+            cand = tuple(fwd) if tuple(fwd) < tuple(bwd) else tuple(bwd)
+            if best is None or cand < best:
+                best = cand
+        return best
 
-    while edges:
-        a, b = next(iter(edges))
-        path = [a, b]
-        in_path = {a: 0, b: 1}
-        prev, curr = a, b
+    for u in nodes:
+        for v in core_adj[u]:
+            if v <= u:  # enforce v>u to reduce duplicates
+                continue
+            stack = [(u, v, [u, v])]
+            while stack:
+                root, cur, path = stack.pop()
+                # neighbors with id >= root to keep canonical growth
+                for w in core_adj[cur]:
+                    if w == path[-2]:
+                        continue  # don't immediately go back
+                    if w == root:
+                        if len(path) >= 3:
+                            cyc = canonical_cycle(path[:])
+                            if cyc not in seen_cycles:
+                                seen_cycles.add(cyc)
+                                cycles.append(list(cyc))
+                        continue
+                    # grow only if w >= root and new
+                    if w >= root and (w not in path):
+                        stack.append((root, w, path + [w]))
 
-        while True:
-            nxts = [w for w in core_adj[curr] if w != prev and edge_exists(curr, w)]
-            if not nxts:
-                break
-            nxt = min(nxts)
+    if not cycles:
+        return []
 
-            if nxt == path[0]:
-                # valid closed loop
-                path.append(nxt)
-                for x, y in zip(path, path[1:]):
-                    discard_edge(x, y)
-                cyc = path[:-1]  # remove duplicate start
-                if len(cyc) >= 3:
-                    loops.append(np.asarray(cyc, dtype=int))
-                break
+    # ---------- 2) select cycles (prefer long, low-overlap) ----------
+    # Filter tiny cycles first
+    cycles = [c for c in cycles if len(c) >= MIN_LEN]
 
-            if nxt in in_path:
-                # revisiting a different node: not a valid loop
-                break
+    # Sort by length desc
+    cycles.sort(key=len, reverse=True)
 
-            in_path[nxt] = len(path)
-            path.append(nxt)
-            prev, curr = curr, nxt
+    selected: list[np.ndarray] = []
+    used_edges: set[Tuple[int, int]] = set()
 
-        # consume any used edges in path
-        for x, y in zip(path, path[1:]):
-            discard_edge(x, y)
+    for cyc in cycles:
+        cyc_edges = {ekey(a, b) for a, b in zip(cyc, cyc[1:] + cyc[:1])}
+        if not cyc_edges:
+            continue
+        new_edges = cyc_edges - used_edges
+        # keep only if it brings enough new edges (prevents tiny loop replacing a big one)
+        if len(new_edges) / len(cyc_edges) >= MIN_NEW_EDGE_FRAC:
+            selected.append(np.asarray(cyc, dtype=int))
+            used_edges |= cyc_edges
 
-    loops.sort(key=lambda a: -len(a))
-    return loops
+    # final sort by length desc
+    selected.sort(key=lambda a: -len(a))
+    return selected
 
 
 # ---------------------------------------------------------------------

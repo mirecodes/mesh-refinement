@@ -6,10 +6,16 @@ import trimesh
 
 from json_handler import JsonHandler
 
-def stage_decompose(cfgs, ms: pymeshlab.MeshSet):
+def stage_decompose(cfgs):
+    states = JsonHandler(cfgs.json_states_dir, auto_save=True)
 
     # Load mesh data
+    ms = pymeshlab.MeshSet()
+
+    mesh_in_dir = states.refine.dirs.mesh
+    ms.load_new_mesh(mesh_in_dir)
     mesh = ms.mesh(0)
+
     verts = mesh.vertex_matrix()
     faces = mesh.face_matrix()
     mesh = coacd.Mesh(verts, faces)
@@ -18,7 +24,6 @@ def stage_decompose(cfgs, ms: pymeshlab.MeshSet):
     parts = coacd.run_coacd(mesh)
 
     # Save intermediate state into the json file
-    states = JsonHandler(cfgs.json_states_dir, auto_save=True)
     states.decompose = {}
     states.decompose.length = len(parts)
     states.decompose.dirs = {
@@ -34,3 +39,10 @@ def stage_decompose(cfgs, ms: pymeshlab.MeshSet):
         decompose_dir = os.path.join(cfgs.mesh_working_dir, fname)
         tri.export(decompose_dir)
         states.decompose.dirs.mesh.append(decompose_dir)
+
+    try:
+        ms.clear()
+    except Exception:
+        pass
+
+    return

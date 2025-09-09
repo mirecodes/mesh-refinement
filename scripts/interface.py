@@ -16,19 +16,23 @@ class SystemConfigs():
     json_config_path = "configs.json"
 
     # Operational controller
-    enable_stage_align: bool = True
-    enable_stage_refine: bool = True
+    enable_stage_align: bool = False
+    enable_stage_refine: bool = False
     enable_stage_decompose: bool = False
-    enable_stage_segment: bool = False
-    enable_stage_articulate: bool = False
-    enable_stage_bind: bool = False
+    enable_stage_segment: bool = True
+    enable_stage_articulate: bool = True
+    enable_stage_bind: bool = True
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
     # --------------------------------------------------------------------------
 
-    # Directories
     json_cfgs = JsonHandler(json_config_path)
+
+    # Parameters
+    categories_num = json_cfgs.parts.num
+
+    # Directories
     object_name = json_cfgs.object_name
     extension = json_cfgs.extension
 
@@ -105,14 +109,14 @@ def execute_pipeline(cfgs: SystemConfigs):
 
     if cfgs.enable_stage_decompose:
         print("[info]: Running the decomposition stage")
-        stage_decompose(cfgs, ms)
+        stage_decompose(cfgs)
     else:
         print("[info]: Loading the decomposed meshset")
         ms = load_from_saves(cfgs, 'decompose')
 
     if cfgs.enable_stage_segment:
         print("[info]: Running the segmentation stage")
-        stage_segment(cfgs, ms)
+        stage_segment(cfgs)
     else:
         print("[info]: Loading the articulated meshset")
         ms = load_from_saves(cfgs, 'segment')

@@ -81,8 +81,6 @@ def stage_refine(cfgs):
     ms = pymeshlab.MeshSet()
     mesh_in_dir = states.transform.dirs.mesh
     ms.load_new_mesh(mesh_in_dir)
-    ms.load_new_mesh(mesh_in_dir)
-    ms.set_current_mesh(0)
 
     # --------------------------------------------------------------------------
     # Mesh Refinement Process
@@ -155,5 +153,10 @@ def stage_refine(cfgs):
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
     states.refine = {}
     states.refine.dirs = {"mesh": mesh_out_dir}
+
+    try:
+        ms.clear()
+    except Exception:
+        pass
 
     return

@@ -247,6 +247,8 @@ def learn_separator_main(
     ms: pymeshlab.MeshSet,
     categories: list[list[trimesh.Trimesh]],
     idx_part: int,
+    adj: list[list[int]],
+    vert_label: np.ndarray,
     max_hops: int = 5,
     method: str | list[str] = "all",   # 'linear' | 'rbf' | 'polyhedral' | 'all' | list of these
     C: float = 1.0,
@@ -275,14 +277,6 @@ def learn_separator_main(
     verts = ms.current_mesh().vertex_matrix()
     faces = ms.current_mesh().face_matrix().astype(np.int64)
 
-    # (1) Build adjacency
-    adj = build_adjacency_graph(faces, len(verts))
-
-    # (2) Vertex labeling by categories
-    if not 0 < idx_part < len(categories):
-        raise ValueError("[error]: idx_part must be in [1, len(parts))]")
-    vert_label = classify_vertices(verts, categories, use_signed_dist, sdf_thresh)
-
     # (3) Seeds check
     idx_seeds = np.where(vert_label == idx_part)[0]
     if len(idx_seeds) == 0:
@@ -291,6 +285,19 @@ def learn_separator_main(
     # (4) Get boundaries
     boundary_indices = filter_boundary_vertices(adj, vert_label, idx_part)
     loops = segregate_loops(adj, boundary_indices)
+
+    # visualize_boundary_loops(ms=ms,
+    #     categories=categories,
+    #     idx_part=idx_part,
+    #     loops=loops,
+    #     boundary_indices=boundary_indices,  # ← 함께 표시
+    #     show_original_mesh=True,
+    #     tube_radius=0.010,
+    #     sphere_radius=0.005,
+    #     boundary_point_size=0.005,
+    #     boundary_point_color="red",
+    #     background="white",
+    # )
 
     # normalize `method` to a list of methods to run
     if isinstance(method, (list, tuple)):
@@ -460,85 +467,87 @@ def _trimesh_list_to_vedo_mesh(parts: list[trimesh.Trimesh]) -> vedo.Mesh | None
     F = np.vstack(f_all)
     return vedo.Mesh([V, F])
 
+
 def visualize_boundary_loops(
     ms: pymeshlab.MeshSet,
     categories: list[list[trimesh.Trimesh]],
     idx_part: int,
     loops: list[np.ndarray],
     *,
-    show_original_mesh: bool = True,    # True면 원본 메쉬도 표시
-    tube_radius: float = 0.4,           # 루프 튜브 반지름
-    sphere_radius: float = 0.8,         # 루프 중심 표시 구 반지름
+    boundary_indices: np.ndarray | None = None,  # ★ 추가: 경계 정점 인덱스
+    show_original_mesh: bool = True,
+    tube_radius: float = 0.4,
+    sphere_radius: float = 0.8,
+    boundary_point_size: float = 6.0,           # ★ 추가: 경계 포인트 크기
+    boundary_point_color = "black",             # ★ 추가: 경계 포인트 색
     background: str = "white",
 ):
     """
-    Visualize boundary loops together with either the original mesh and/or the target part.
-    - `loops` : list of arrays of vertex indices (dtype=int)
+    Visualize boundary loops; optionally overlay boundary vertex indices as points.
+    - loops : list of arrays of vertex indices (each loop = ordered vertex ids)
+    - boundary_indices : (B,) array of vertex indices to draw as points (optional)
     """
-    # 0) get original mesh vertices/faces from MeshSet(0)
+    # 0) get original mesh geometry
     ms.set_current_mesh(0)
     verts = ms.current_mesh().vertex_matrix()
     faces = ms.current_mesh().face_matrix().astype(np.int64)
 
-    # 1) actors container
     actors = []
 
-    # 2) original mesh (semi-transparent)
+    # 1) original mesh (semi-transparent)
     if show_original_mesh:
         m_orig = vedo.Mesh([verts, faces]).c("lightgray").alpha(0.25)
         m_orig.lighting("plastic")
         actors.append(m_orig)
 
-    # 3) selected part from categories[idx_part]
+    # 2) selected part mesh (if any)
     vpart = _trimesh_list_to_vedo_mesh(categories[idx_part])
     if vpart is not None:
         vpart.c("dodgerblue").alpha(0.35).lw(0.5).lighting("plastic")
         actors.append(vpart)
 
-    # 4) draw loops
+    if len(loops) < 1: return
+
+    # 3) draw loops (as tubes) + loop centers (small spheres)
     cmap = vedo.color_map(range(len(loops)), "Set1")  # distinct colors
     for i, loop in enumerate(loops):
         loop = np.asarray(loop, dtype=int).ravel()
         if loop.size == 0:
             continue
-
-        # 좌표 시퀀스
         pts = verts[loop]
-
-        # 루프가 닫혀 있는지(첫/끝 이웃 여부) 판단
-        closed = (loop.size >= 3 and (loop[0] == loop[-1] or loop[0] in set(adjacent for adjacent in [])))
-        # 위 closed 여부는 보수적으로 False로 두고, 실제로는 open/closed 모두 그리되,
-        # 닫힌 형태로 보고 싶으면 다음 한 줄로 덮어써도 됩니다:
-        # closed = (loop.size >= 3 and loop[0] == loop[-1])
-
-        # vedo.Line으로 경계 곡선을 만들고 튜브화
         line = vedo.Line(pts, closed=False).c(cmap[i]).lw(2)
-        # Some vedo versions expose Line.tube(...), not .tubes(...)
         if hasattr(line, "tube") and callable(getattr(line, "tube")):
             try:
                 tube = line.tube(radius=tube_radius).c(cmap[i])
             except TypeError:
-                # Fallback for signatures like tube(r=...)
                 tube = line.tube(tube_radius).c(cmap[i])
         else:
-            # Final fallback: build a Tube actor from points directly
             tube = vedo.Tube(pts, r=tube_radius, cap=True).c(cmap[i])
         actors.append(tube)
 
-        # 루프 중심 표시
         center = pts.mean(axis=0)
-        s = vedo.Sphere(pos=center, r=sphere_radius, res=16).c(cmap[i]).alpha(1.0)
+        s = vedo.Sphere(pos=center, r=sphere_radius, res=16).c(cmap[i]).alpha(0.5)
+        actors.append(s)
 
-    # 5) axes (version-safe) & show
-    plt = vedo.Plotter(bg=background, title="Boundary loops")
-    _axes_target = m_orig if show_original_mesh else (vpart or vedo.Mesh([verts, faces]))
+    # 4) boundary indices → 확실히 보이도록 Spheres 글리프로
+    if boundary_indices is not None and len(boundary_indices) > 0:
+        bi = np.asarray(boundary_indices, int)
+        bi = bi[(bi >= 0) & (bi < verts.shape[0])]
+        if bi.size > 0:
+            # 빨간 구로 또렷하게
+            dots = vedo.Spheres(verts[bi], r=boundary_point_size, c="red", alpha=1.0)
+            # 포인트가 표면에 파묻혀 보여도 구는 확실히 보입니다.
+            actors.append(dots)
+
+    # 5) axes & show
+    plt = vedo.Plotter(bg=background, title="Boundary loops (+ boundary points)")
+    _axes_target = actors[0] if show_original_mesh else (vpart or vedo.Mesh([verts, faces]))
     try:
         axes_actor = vedo.Axes(_axes_target, axesType=4, xyGrid=True)
     except TypeError:
         try:
-            # Some vedo versions don't accept axesType
             axes_actor = vedo.Axes(_axes_target, xyGrid=True)
         except TypeError:
-            # Fallback minimal Axes
             axes_actor = vedo.Axes(_axes_target)
     plt.show(actors + [axes_actor], viewup="z").close()
+
