@@ -216,7 +216,7 @@ def generate_urdf(
 # ================================
 # Stage: articulate (minimal)
 # ================================
-def stage_articulate(cfgs, ms: pymeshlab.MeshSet):
+def stage_articulate(cfgs):
     # Load states
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
 

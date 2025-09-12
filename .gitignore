@@ -4,6 +4,11 @@
 # IDE
 .idea/
 
+# Working Directory
+data/
+work/
+out/
+
 # Python
 __pycache__/
 *.pyc

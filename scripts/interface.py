@@ -123,7 +123,7 @@ def execute_pipeline(cfgs: SystemConfigs):
 
     if cfgs.enable_stage_articulate:
         print("[info]: Running the articulation stage")
-        stage_articulate(cfgs, ms)
+        stage_articulate(cfgs)
     else:
         print("[info]: Loading the articulated meshset")
         ms = load_from_saves(cfgs, 'articulate')
