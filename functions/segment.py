@@ -80,8 +80,7 @@ def boundary_distance_and_height(grid_xy: np.ndarray, poly_uv: np.ndarray, h_loo
     dist2 = np.full(M, np.inf, dtype=float)
     hb = np.zeros(M, dtype=float)
     for i in range(len(poly_uv) - 1):
-        A = poly_uv[i]
-        B = poly_uv[i + 1]
+        A = poly_uv[i]; B = poly_uv[i + 1]
         _, t, d2 = nearest_segment_projection(grid_xy, A, B)
         upd = d2 < dist2
         if np.any(upd):
@@ -128,7 +127,7 @@ def triangulate_points_2d(points_uv: np.ndarray):
 
 
 # =============================================================================
-# Externalized local updaters (moved from nested defs; logic unchanged)
+# Externalized local updaters
 # =============================================================================
 def update_from_neighbors_dense(idx: int,
                                 pts_uv: np.ndarray,
@@ -255,10 +254,7 @@ def harmonic_heights_on_triangulation(pts_uv: np.ndarray,
                 wsum = 0.0
                 for j in neighbors[i]:
                     Hj = H[int(j)]
-                    if value_weighted and it >= warmup:
-                        w = 1.0 + alpha * min(abs(Hj), weight_clip)
-                    else:
-                        w = 1.0
+                    w = 1.0 + alpha * min(abs(Hj), weight_clip) if value_weighted and it >= warmup else 1.0
                     s += w * Hj
                     wsum += w
                 v = H[i] if wsum <= 1e-12 else (s / wsum)
@@ -357,15 +353,11 @@ def triangulate_patch_on_loop(loop_xyz: np.ndarray,
     hB[M_in:M_in + M_bd] = hb_dense
     H = harmonic_heights_on_triangulation(
         pts_uv, tri_obj, boundary_mask, hB,
-        prefer_scipy=True,
-        max_iters=1000, tol=1e-6,
-        value_weighted=True,
-        alpha=0.5,
-        weight_clip=10.0,
-        warmup=5
+        prefer_scipy=True, max_iters=1000, tol=1e-6,
+        value_weighted=True, alpha=0.5, weight_clip=10.0, warmup=5
     )
 
-    # Embed to 3D and keep only triangles whose centroids lie inside polygon
+    # Embed to 3D and keep only triangles inside polygon
     X = pts_uv[:, 0]; Y = pts_uv[:, 1]; Z = H
     P3 = c + np.outer(X, u) + np.outer(Y, v) + np.outer(Z, n)
     tris = np.asarray(tri_obj.triangles, dtype=int)
@@ -455,29 +447,122 @@ def append_patches_to_mesh_files(mesh_paths: Dict[str, str],
 # Joint building
 # =============================================================================
 def build_joints_from_rlps(rlps: List[dict]) -> List[dict]:
-    """Convert selected RLP vectors (Revolute/Prismatic) into joint specs."""
-    joints = []
+    """
+    Group selected vectors by (link pair, origin) and synthesize joints:
+      - mixed types at same origin -> error
+      - >=2 Revolute -> Spherical
+      - >=2 Prismatic -> Planar
+      - else pass-through
+    """
+    picked = []
     for rlp in rlps:
-        p = int(rlp["a"]["parent"]); c = int(rlp["a"]["child"])
-        vecs = rlp.get("vectors", []) or []
-        chosen = [v for v in vecs if isinstance(v, dict) and v.get("state") in ("Revolute", "Prismatic")]
-
-        def _ord_key(v):
-            o = v.get("order", None)
-            return (1, 1e18) if o is None else (0, int(o))
-        chosen.sort(key=_ord_key)
-
-        for v in chosen:
-            ori = np.asarray(v.get("center", rlp.get("center", [0, 0, 0])), dtype=float).ravel()
-            nvec = v.get("n") if v.get("n") is not None else v.get("n_poly")
-            nvec = normalize(np.asarray(nvec, dtype=float).ravel())
-            if not np.isfinite(nvec).all() or np.linalg.norm(nvec) < 1e-12:
+        p = int(rlp.get("a", {}).get("parent", rlp.get("parent", -1)))
+        c = int(rlp.get("a", {}).get("child",  rlp.get("child",  -1)))
+        if p < 0 or c < 0 or p == c:
+            continue
+        for v in (rlp.get("vectors") or []):
+            st = v.get("state")
+            if st not in ("Revolute", "Prismatic"):
                 continue
+            o = np.asarray(v.get("center", rlp.get("center", [0,0,0])), dtype=float).ravel()
+            n = np.asarray(v.get("n") if v.get("n") is not None else v.get("n_poly"), dtype=float).ravel()
+            if o.size != 3 or n.size != 3:
+                continue
+            n = normalize(n)
+            if not np.isfinite(o).all() or not np.isfinite(n).all() or np.linalg.norm(n) < 1e-12:
+                continue
+            i, j = (p, c) if p < c else (c, p)
+            picked.append({"pair": (i, j), "origin": o, "n": n, "type": st})
+
+    if not picked:
+        return []
+
+    O = np.vstack([x["origin"] for x in picked])
+    bb = O.max(axis=0) - O.min(axis=0)
+    diag = float(np.linalg.norm(bb))
+    eps = max(diag * 1e-4, 1e-8)
+
+    def _cluster_origins(items):
+        groups = []
+        centers = []
+        for k, it in enumerate(items):
+            o = it["origin"]
+            assigned = False
+            for gi, cen in enumerate(centers):
+                if np.linalg.norm(o - cen) <= eps:
+                    groups[gi].append(k)
+                    centers[gi] = centers[gi] + (o - centers[gi]) / float(len(groups[gi]))
+                    assigned = True
+                    break
+            if not assigned:
+                groups.append([k])
+                centers.append(o.copy())
+        return groups, np.vstack(centers) if centers else np.zeros((0,3))
+
+    from collections import defaultdict as _dd
+    by_pair: Dict[Tuple[int,int], List[int]] = _dd(list)
+    for idx, it in enumerate(picked):
+        by_pair[it["pair"]].append(idx)
+
+    joints = []
+    for pair, idxs in by_pair.items():
+        sub = [picked[k] for k in idxs]
+        groups, group_centers = _cluster_origins(sub)
+        for g_idx, g in enumerate(groups):
+            items = [sub[k] for k in g]
+            origin = group_centers[g_idx]
+            types = {it["type"] for it in items}
+            if len(types) > 1:
+                raise ValueError(f"Mixed joint types at same origin for link {pair}: {sorted(list(types))}")
+            jtype = next(iter(types))
+            dirs = np.vstack([it["n"] for it in items])
+
+            if jtype == "Revolute" and len(items) >= 2:
+                n_rep = dirs[0]
+                axes = [d.tolist() for d in dirs[:2]]
+                joints.append({
+                    "parent": pair[0], "child": pair[1],
+                    "type": "Spherical",
+                    "axis": {"origin": origin.astype(float).tolist(),
+                             "n": n_rep.astype(float).tolist()},
+                    "axes": axes
+                })
+                continue
+
+            if jtype == "Prismatic" and len(items) >= 2:
+                U, S, Vt = np.linalg.svd(dirs, full_matrices=False)
+                n_plane = normalize(Vt[-1])
+                u0 = dirs[0] - np.dot(dirs[0], n_plane) * n_plane
+                if np.linalg.norm(u0) < 1e-12:
+                    found = False
+                    for k in range(1, dirs.shape[0]):
+                        u0 = dirs[k] - np.dot(dirs[k], n_plane) * n_plane
+                        if np.linalg.norm(u0) >= 1e-12:
+                            found = True
+                            break
+                    if not found:
+                        u0 = dirs[0] - np.dot(dirs[0], n_plane) * n_plane
+                u = normalize(u0)
+                v = normalize(np.cross(n_plane, u))
+                joints.append({
+                    "parent": pair[0], "child": pair[1],
+                    "type": "Planar",
+                    "axis": {"origin": origin.astype(float).tolist(),
+                             "n": n_plane.astype(float).tolist()},
+                    "plane": {"n": n_plane.astype(float).tolist(),
+                              "u": u.astype(float).tolist(),
+                              "v": v.astype(float).tolist()}
+                })
+                continue
+
+            n = dirs[0]
             joints.append({
-                "parent": p, "child": c,
-                "axis": {"origin": ori.astype(float).tolist(), "n": nvec.astype(float).tolist()},
-                "type": v.get("state")
+                "parent": pair[0], "child": pair[1],
+                "axis": {"origin": origin.astype(float).tolist(),
+                         "n": n.astype(float).tolist()},
+                "type": jtype
             })
+
     return joints
 
 
@@ -506,7 +591,7 @@ def compute_separation_results(ms: pymeshlab.MeshSet,
 
 
 def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
-    """Populate vector candidates on each RLP from plane/normal info."""
+    """Create vector candidates on each RLP from plane/normal info."""
     for rlp in rlps:
         center = rlp['center']
         A = rlp['a']['linear']; B = rlp['b']['linear']
@@ -535,11 +620,7 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
 
 def build_extrapoints_and_patches(results_list: List[dict],
                                   verts: np.ndarray):
-    """
-    For each loop:
-      - Dense debug points
-      - Triangulated patch (P3, F)
-    """
+    """For each loop: dense sampling + triangulated patch."""
     patch_vertices: Dict[int, List[np.ndarray]] = defaultdict(list)
     patch_faces: Dict[int, List[np.ndarray]] = defaultdict(list)
     for res in results_list:
@@ -556,7 +637,7 @@ def build_extrapoints_and_patches(results_list: List[dict],
 
 
 # =============================================================================
-# Visualization (callbacks and UI)
+# Visualization (callbacks) — part selection
 # =============================================================================
 def recolor_parts(vmeshes, belongings, mode, rand_colors):
     if mode == 0:
@@ -601,10 +682,7 @@ def on_tab(event, vmeshes, belongings, prevs, shared, categories_num, rand_color
         mode = shared['mode']
         recolor_parts(vmeshes, belongings, mode, rand_colors)
         plt.render()
-        if mode == 0:
-            print(f"[info]: defualt mode")
-        else:
-            print(f"[info]: selection mode #{mode}")
+        print(f"[info]: {'default mode' if mode==0 else f'selection mode #{mode}'}")
 
 
 def on_key(event, vmeshes, belongings, prevs, shared, rand_colors, categories_num, plt):
@@ -620,6 +698,9 @@ def on_key(event, vmeshes, belongings, prevs, shared, rand_colors, categories_nu
         on_tab(event, vmeshes, belongings, prevs, shared, categories_num, rand_colors, plt)
 
 
+# =============================================================================
+# Vector selection base (per-RLP)
+# =============================================================================
 def on_vector_click(event, *, vec_actors, rlp, click_counter):
     """Toggle None → Revolute → Prismatic → None; record first selection order."""
     act = getattr(event, "actor", None)
@@ -655,18 +736,149 @@ def on_vector_click(event, *, vec_actors, rlp, click_counter):
     except Exception: pass
 
 
+# ---- helpers for keyboard transform on RLP window ----
+def _rotmat(axis: np.ndarray, theta: float) -> np.ndarray:
+    """World-frame axis-angle rotation matrix (right-handed)."""
+    a = normalize(np.asarray(axis, dtype=float))
+    x, y, z = a
+    c, s = np.cos(theta), np.sin(theta)
+    C = 1.0 - c
+    return np.array([
+        [c + x*x*C,     x*y*C - z*s, x*z*C + y*s],
+        [y*x*C + z*s,   c + y*y*C,   y*z*C - x*s],
+        [z*x*C - y*s,   z*y*C + x*s, c + z*z*C]
+    ], dtype=float)
+
+
+def _update_arrow_geometry(actor, center, n, seg_len):
+    # mutate in place only
+    p0 = np.asarray(center, dtype=float)
+    p1 = p0 + seg_len * normalize(np.asarray(n, dtype=float))
+    try:
+        actor.points([p0, p1])        # Tube/Line support this
+    except Exception:
+        # 일부 Line 구현에서 다른 이름일 수 있으나, vedo 최신에선 points로 충분
+        pass
+    # keep visuals consistent
+    state = getattr(actor, "vec_state", "None")
+    try:
+        actor.c("yellow" if state == "Revolute"
+                else "blue" if state == "Prismatic" else "gray")
+        actor.alpha(1.0 if state in ("Revolute", "Prismatic") else 0.9)
+        if hasattr(actor, "lw"):
+            actor.lw(8)
+    except Exception:
+        pass
+
+
+def on_rlp_key(event, *,
+               plt,
+               rlp: dict,
+               vec_indices: List[int],
+               idx2actor: dict,
+               seg_len: float,
+               angle_step_deg: float = 3.0,
+               trans_step: float = 1.0):
+    """
+    Keyboard controls (apply to ALL vectors in this RLP window):
+      Move:  W(+X), S(-X), D(+Y), A(-Y), Space(+Z), Shift(-Z)
+      Rotate around each center: I(+Z), U(-Z), J(+Y), H(-Y), N(+X), B(-X)
+      Exit: q / esc
+    """
+    kraw = getattr(event, "keypress", "") or ""
+    k = kraw.lower()
+
+    # exit
+    if k in ("q", "esc", "escape"):
+        try:
+            plt.close()
+        except Exception:
+            pass
+        try:
+            vedo.close()
+        except Exception:
+            pass
+        return
+
+    # translation delta
+    d = np.zeros(3, dtype=float)
+    if   k == "w": d[:] = (+trans_step, 0.0, 0.0)
+    elif k == "s": d[:] = (-trans_step, 0.0, 0.0)
+    elif k == "d": d[:] = (0.0, +trans_step, 0.0)
+    elif k == "a": d[:] = (0.0, -trans_step, 0.0)
+    elif k in (" ", "space"): d[:] = (0.0, 0.0, +trans_step)
+    elif k == "z": d[:] = (0.0, 0.0, -trans_step)
+
+    # rotation matrix
+    R = None
+    th = np.deg2rad(angle_step_deg)
+    if   k == "i": R = _rotmat([0,0,1], +th)  # +Z
+    elif k == "u": R = _rotmat([0,0,1], -th)  # -Z
+    elif k == "j": R = _rotmat([0,1,0], +th)  # +Y
+    elif k == "h": R = _rotmat([0,1,0], -th)  # -Y
+    elif k == "n": R = _rotmat([1,0,0], +th)  # +X
+    elif k == "b": R = _rotmat([1,0,0], -th)  # -X
+
+    did_anything = False
+
+    # apply to all vectors of this RLP
+    vecs = rlp.get("vectors", []) or []
+    for vi in vec_indices:
+        if vi < 0 or vi >= len(vecs):
+            continue
+        v = vecs[vi]
+
+        # translate centers
+        if np.any(d):
+            c = np.asarray(v.get("center", rlp.get("center", [0,0,0])), dtype=float)
+            c2 = c + d
+            v["center"] = c2.tolist()
+            # also move rlp center (UI center)
+            if "center" in rlp and isinstance(rlp["center"], (list, tuple)):
+                rlp["center"] = (np.asarray(rlp["center"], dtype=float) + d).tolist()
+            did_anything = True
+
+        # rotate direction
+        if R is not None and ("n" in v) and v["n"] is not None:
+            n = normalize(np.asarray(v["n"], dtype=float))
+            n2 = normalize(R @ n)
+            v["n"] = n2.tolist()
+            did_anything = True
+
+        # live update actor geometry
+        key = vi
+        if key in idx2actor:
+            actor = idx2actor[key]
+            c_now = np.asarray(v.get("center", rlp.get("center", [0,0,0])), dtype=float)
+            n_now = normalize(np.asarray(v.get("n"), dtype=float)) if v.get("n") is not None else None
+            if n_now is not None and np.isfinite(n_now).all() and np.linalg.norm(n_now) > 1e-12:
+                # just mutate in place, never add/remove in a callback
+                _update_arrow_geometry(actor, c_now, n_now, seg_len)
+
+    if did_anything:
+        plt.render()  # <-- event.plotter.render() -> plt.render()
+
+
 def visualize_and_select_vectors_for_rlps(rlps: List[dict],
                                           parts: List[trimesh.Trimesh],
                                           categories: List[List[trimesh.Trimesh]],
                                           verts: np.ndarray,
                                           faces: np.ndarray) -> None:
-    """Per RLP: render base mesh + two parts, show vector candidates, enable click selection."""
+    """
+    One window per RLP:
+      - show base mesh + the two parts
+      - draw all vectors
+      - click to toggle state
+      - keyboard to move/rotate all vectors of THIS RLP
+    """
+    scene_diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
+    seg_len = scene_diag * 0.2 if np.isfinite(scene_diag) and scene_diag > 0 else 1.0
+    trans_step = scene_diag * 0.02 if np.isfinite(scene_diag) and scene_diag > 0 else 1.0
+
     for i, rlp in enumerate(rlps):
         mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.35)
-        try:
-            mesh_actor.pickable(False)
-        except Exception:
-            pass
+        try: mesh_actor.pickable(False)
+        except Exception: pass
 
         p_idx = int(rlp["a"]["parent"])
         q_idx = int(rlp["a"]["child"])
@@ -678,43 +890,63 @@ def visualize_and_select_vectors_for_rlps(rlps: List[dict],
         for j, pid in enumerate(part_ids):
             for tri in categories[pid]:
                 actor = vedo.Mesh([tri.vertices, tri.faces]).c(part_colors[min(j, 1)]).alpha(0.25)
-                try:
-                    actor.pickable(False)
-                except Exception:
-                    pass
+                try: actor.pickable(False)
+                except Exception: pass
                 part_actors.append(actor)
 
-        seg_len = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))) * 0.2
+        # build actors
+        vecs = rlp.get('vectors', []) or []
         vec_actors = []
-        for k, v in enumerate(rlp.get('vectors', []) or []):
+        idx2actor = {}  # vi -> actor
+        valid_indices = []
+
+        for vi, v in enumerate(vecs):
             c = np.asarray(v.get("center", rlp.get("center", [0, 0, 0])), dtype=float)
             n = normalize(np.asarray(v.get("n"), dtype=float))
             if not np.isfinite(n).all() or np.linalg.norm(n) < 1e-12:
                 continue
-            p0 = c
-            p1 = c + seg_len * n
-            try:
-                a = vedo.Arrow(p0, p1, shaftRadius=seg_len * 0.02).c("gray").alpha(1.0)
-            except TypeError:
-                try:
-                    a = vedo.Tube([p0, p1], r=seg_len * 0.02, cap=True).c("gray").alpha(1.0)
-                except Exception:
-                    a = vedo.Line(p0, p1).c("gray").alpha(1.0).lw(8)
-            setattr(a, "vec_state", "None")
-            setattr(a, "vec_idx", k)
+            p0, p1 = c, c + seg_len * n
+            a = vedo.Tube([p0, p1], r=seg_len * 0.02, cap=True).c("gray").alpha(1.0)
+            st = v.get("state", "None")
+            setattr(a, "vec_state", st)
+            setattr(a, "vec_idx", vi)
             vec_actors.append(a)
+            idx2actor[vi] = a
+            valid_indices.append(vi)
 
         click_counter = {'count': 0}
         plt_rlp = vedo.Plotter(title=f"RLP #{i}: parts {p_idx} ↔ {q_idx}", axes=1)
+
+        # mouse: toggle
         plt_rlp.add_callback(
             "LeftButtonPress",
             partial(on_vector_click, vec_actors=vec_actors, rlp=rlp, click_counter=click_counter)
         )
+        # disable default VTK keybindings
+        try:
+            iren = plt_rlp.interactor
+            for _ev in ("KeyPressEvent", "KeyReleaseEvent", "CharEvent"):
+                iren.RemoveObservers(_ev)
+        except Exception:
+            pass
+        # keyboard: move/rotate
+        plt_rlp.add_callback(
+            "KeyPress",
+            partial(on_rlp_key,
+                    plt=plt_rlp,
+                    rlp=rlp,
+                    vec_indices=valid_indices,
+                    idx2actor=idx2actor,
+                    seg_len=seg_len,
+                    angle_step_deg=3.0,
+                    trans_step=trans_step)
+        )
+
         plt_rlp.show([mesh_actor, *part_actors, *vec_actors], interactive=True).close()
 
 
 # =============================================================================
-# Link-pair vector selection (new)
+# Link-pair utilities used only for augmentation (keep)
 # =============================================================================
 from collections import defaultdict as _dd
 
@@ -776,7 +1008,6 @@ def _augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
     """Add a pair-level vector suggestion into each RLP in the group."""
     if len(group_indices) < 2:
         return
-
     centers, normals, weights = [], [], []
     for i in group_indices:
         r = rlps[i]
@@ -786,13 +1017,12 @@ def _augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
             continue
         centers.append(ctr); normals.append(nrm)
         loop_idx = r.get("loop", [])
-        w = int(len(loop_idx)) if loop_idx is not None else 1  # weight by loop size
+        w = int(len(loop_idx)) if loop_idx is not None else 1
         weights.append(max(w, 1))
 
     if len(centers) < 2:
         return
 
-    # case: exactly 2 RLPs
     if len(group_indices) == 2:
         c1, c2 = centers[0], centers[1]
         n1 = normals[0] if normals[0] is not None else normalize(c2 - c1)
@@ -812,7 +1042,6 @@ def _augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
             rlps[i]["vectors"].append(dict(vec))
         return
 
-    # case: 3+ RLPs → weighted mean center, averaged (sign-aligned) normal
     w = np.asarray(weights, dtype=float); W = float(w.sum())
     C = np.vstack(centers)
     start = (w[:, None] * C).sum(axis=0) / max(W, 1e-12)
@@ -846,101 +1075,6 @@ def augment_vectors_for_pairs_with_map(rlps: List[dict], min_count: int = 2) -> 
             _augment_for_group(rlps, idxs)
 
 
-def on_link_vector_click(event, *, catalog, rlps, click_counter):
-    """
-    catalog: actor -> (rlp_idx, vec_idx)
-    Toggle None → Revolute → Prismatic → None; record first selection order.
-    """
-    act = getattr(event, "actor", None)
-    if act is None or act not in catalog:
-        return
-    (ri, vi) = catalog[act]
-    st = getattr(act, "vec_state", "None")
-
-    if st == "None":
-        try: act.c("yellow").alpha(1.0)
-        except Exception: pass
-        setattr(act, "vec_state", "Revolute")
-        rlps[ri]["vectors"][vi]["state"] = "Revolute"
-        click_counter['count'] = int(click_counter.get('count', 0)) + 1
-        rlps[ri]["vectors"][vi]["order"] = int(click_counter['count'])
-    elif st == "Revolute":
-        try: act.c("blue").alpha(1.0)
-        except Exception: pass
-        setattr(act, "vec_state", "Prismatic")
-        rlps[ri]["vectors"][vi]["state"] = "Prismatic"
-    else:
-        try: act.c("gray").alpha(0.6)
-        except Exception: pass
-        setattr(act, "vec_state", "None")
-        rlps[ri]["vectors"][vi]["state"] = "None"
-        rlps[ri]["vectors"][vi]["order"] = None
-    try: event.plotter.render()
-    except Exception: pass
-
-
-def visualize_and_select_vectors_for_links(rlps: List[dict],
-                                           parts: List[trimesh.Trimesh],
-                                           categories: List[List[trimesh.Trimesh]],
-                                           verts: np.ndarray,
-                                           faces: np.ndarray) -> None:
-    """
-    One UI per link pair (i,j): show all vectors from all RLPs in that pair.
-    Selecting different centers will create separate joints later.
-    """
-    link_map = build_link_map(rlps)
-    if not link_map:
-        return
-
-    seg_len = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))) * 0.2
-
-    for (i, j), rlp_indices in link_map.items():
-        mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.3)
-        try: mesh_actor.pickable(False)
-        except Exception: pass
-
-        # two parts (i, j)
-        part_colors = [(0.85, 0.2, 0.2), (0.2, 0.4, 0.85)]
-        part_actors = []
-        for idx_part, col in zip((i, j), part_colors):
-            vm = _trimesh_list_to_vedo_mesh(categories[idx_part])
-            if vm is not None:
-                vm.c(col).alpha(0.35).lw(0.5)
-                try: vm.pickable(False)
-                except Exception: pass
-                part_actors.append(vm)
-
-        # gather & draw vectors for this pair
-        catalog = {}  # actor -> (rlp_idx, vec_idx)
-        vec_actors = []
-        for ri in rlp_indices:
-            rlp = rlps[ri]
-            for vi, v in enumerate(rlp.get("vectors", []) or []):
-                c = np.asarray(v.get("center", rlp.get("center", [0, 0, 0])), dtype=float)
-                n = normalize(np.asarray(v.get("n"), dtype=float))
-                if not np.isfinite(n).all() or np.linalg.norm(n) < 1e-12:
-                    continue
-                p0, p1 = c, c + seg_len * n
-                try:
-                    a = vedo.Arrow(p0, p1, shaftRadius=seg_len * 0.02).c("gray").alpha(0.9)
-                except TypeError:
-                    try:
-                        a = vedo.Tube([p0, p1], r=seg_len * 0.02, cap=True).c("gray").alpha(0.9)
-                    except Exception:
-                        a = vedo.Line(p0, p1).c("gray").alpha(0.9).lw(8)
-                setattr(a, "vec_state", v.get("state", "None"))
-                catalog[a] = (ri, vi)
-                vec_actors.append(a)
-
-        click_counter = {'count': 0}
-        plt_link = vedo.Plotter(title=f"Link ({i},{j}) — pick vectors (click to toggle)", axes=1)
-        plt_link.add_callback(
-            "LeftButtonPress",
-            partial(on_link_vector_click, catalog=catalog, rlps=rlps, click_counter=click_counter)
-        )
-        plt_link.show([mesh_actor, *part_actors, *vec_actors], interactive=True).close()
-
-
 # =============================================================================
 # Stage (entry point)
 # =============================================================================
@@ -953,8 +1087,7 @@ def stage_segment(cfgs):
     5) Persist states (states.segment.*)
     """
     # Load states & base mesh
-
-    states = JsonHandler(cfgs.json_states_dir, auto_save=False)
+    states = JsonHandler(cfgs.json_states_dir, auto_save=True)
     parts = [trimesh.load(states.decompose.dirs.mesh[i]) for i in range(states.decompose.length)]
 
     ms = pymeshlab.MeshSet()
@@ -983,7 +1116,6 @@ def stage_segment(cfgs):
     shared = {"mode": 0}
 
     plt = vedo.Plotter(title="Part selection")
-    # disable default VTK keybindings
     try:
         iren = plt.interactor
         for _ev in ("KeyPressEvent", "KeyReleaseEvent", "CharEvent"):
@@ -1005,28 +1137,27 @@ def stage_segment(cfgs):
     adj = build_adjacency_graph(faces, len(verts))
     vert_label = classify_vertices(verts, categories, use_signed_dist=True).astype(int)
 
+    # Separation + clustering + vector proposals
     results_list = compute_separation_results(ms, categories, categories_num, adj, vert_label, method="all")
     rlps = cluster_reciprocal_loop_pairs(results_list, w_pos=1.0, w_ang=0.5, cost_max=None)
     prepare_vectors_for_rlps(rlps)
+    augment_vectors_for_pairs_with_map(rlps, min_count=2)  # optional: adds extra suggestions
 
-    # Vector selection UI
-    # visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces)
-    augment_vectors_for_pairs_with_map(rlps, min_count=2)  # 같은 링크 페어에 RLP가 2개 이상일 때만 보강 벡터 추가
-    visualize_and_select_vectors_for_links(rlps, parts, categories, verts, faces)  # 페어 단위 UI
+    # Vector selection UI (RLP-wise, with keyboard transforms)
+    visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces)
 
-
-    # Save state & per-link meshes
+    # Save per-link meshes
     seg_dir = os.path.join(os.path.dirname(cfgs.json_states_dir), "segment_mesh")
     segment_mesh_paths = save_link_meshes_from_labels(verts, faces, vert_label, categories_num, seg_dir)
     joints = build_joints_from_rlps(rlps)
 
+    # Save states
     states.segment = {}
     states.segment.vert_label = vert_label.tolist()
     states.segment.dirs = {}
     states.segment.dirs.mesh = segment_mesh_paths
     states.segment.joints = joints
 
-    # Patches & append
+    # Patch fill & append
     patch_vertices, patch_faces = build_extrapoints_and_patches(results_list, verts)
     append_patches_to_mesh_files(segment_mesh_paths, patch_vertices, patch_faces)
-

@@ -165,24 +165,45 @@ def generate_urdf(
     # joints
     for child, j in joint_by_child.items():
         parent = int(j["parent"])
-        jtype = _mapping_get(j, "type") or "revolute"
-        urdf_type = "revolute" if str(jtype).lower().startswith("rev") else "prismatic"
-
         parent_name = "base" if parent == 0 else f"link_{parent}"
         child_name = f"link_{child}"
 
+        # joint origin (parent 프레임 기준)
         joint_world_o = np.asarray(j["axis"]["origin"], dtype=float)
         parent_world_o = link_frame_origin.get(parent, np.zeros(3))
         joint_in_parent = joint_world_o - parent_world_o
 
-        axis = _norm(j["axis"]["n"])
+        # ----- 타입 매핑 -----
+        jtype_raw = str(_mapping_get(j, "type") or "revolute").strip().lower()
+        if jtype_raw.startswith("rev"):
+            urdf_type = "revolute"
+        elif jtype_raw.startswith("pri"):
+            urdf_type = "prismatic"
+        elif jtype_raw.startswith("pla"):
+            urdf_type = "planar"  # URDF에 존재 (면의 법선 = axis)
+        elif jtype_raw.startswith("sph"):
+            urdf_type = "floating"  # URDF에는 spherical 없음 → floating으로 대체
+        else:
+            urdf_type = "revolute"  # 폴백
 
+        # 공통 joint 노드
         j_el = ET.SubElement(robot, "joint", name=f"joint_{parent}_{child}", type=urdf_type)
         ET.SubElement(j_el, "parent", link=parent_name)
         ET.SubElement(j_el, "child", link=child_name)
         ET.SubElement(j_el, "origin", xyz=_to_str_xyz(joint_in_parent), rpy="0 0 0")
-        ET.SubElement(j_el, "axis", xyz=_to_str_xyz(axis))
-        ET.SubElement(j_el, "limit", lower="-1.57", upper="1.57", effort="10.0", velocity="1.0")
+
+        # ----- axis / limit 처리 -----
+        # revolute / prismatic / planar 에서는 axis 사용
+        if urdf_type in ("revolute", "prismatic", "planar"):
+            n_raw = _mapping_get(j, "axis")
+            n_vec = _mapping_get(n_raw, "n") if isinstance(n_raw, dict) else None
+            axis = _norm(n_vec if n_vec is not None else [0, 0, 1])
+            ET.SubElement(j_el, "axis", xyz=_to_str_xyz(axis))
+
+        # limit은 revolute / prismatic만 지정
+        if urdf_type in ("revolute", "prismatic"):
+            # 필요 시 값 튜닝
+            ET.SubElement(j_el, "limit", lower="-1.57", upper="1.57", effort="10.0", velocity="1.0")
 
     # save
     tree = ET.ElementTree(robot)

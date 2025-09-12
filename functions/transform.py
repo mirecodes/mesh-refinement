@@ -18,6 +18,28 @@ def apply_R_normals(N: np.ndarray, Rmat: np.ndarray) -> np.ndarray:
     N2 /= (np.linalg.norm(N2, axis=1, keepdims=True) + 1e-12)
     return N2
 
+# -------- Small helper: robust shift for assembly (supports older vedo) -----
+def _shift_assembly(assembly, dx=0.0, dy=0.0, dz=0.0):
+    """Translate the whole assembly by (dx,dy,dz) in world frame."""
+    try:
+        assembly.shift(dx, dy, dz)  # modern vedo
+        return
+    except Exception:
+        pass
+    try:
+        # Fallback: shift all parts
+        for a in getattr(assembly, "actors", []):
+            try:
+                a.shift(dx, dy, dz)
+            except Exception:
+                pass
+    except Exception:
+        # Last resort: pos() additive update if available
+        try:
+            x, y, z = assembly.pos()
+            assembly.pos(x + dx, y + dy, z + dz)
+        except Exception:
+            pass
 
 # -------- Save mesh with applied transform --------
 def save_mesh_with_transform(ms_mesh: pymeshlab.Mesh, out_path: str, T4: np.ndarray):
@@ -80,19 +102,25 @@ def save_gaussian_with_transform(ply: plyfile.PlyData, gaussian_out_path: str, T
     PlyData([PlyElement.describe(v.data, 'vertex')], text=False).write(gaussian_out_path)
 
 
-# -------- Key input callback --------
-def key_press_callback(e, *, assembly=None, plt=None, angle_step: float = 1.0):
+# -------- Key input callback (with translation) -----------------------------
+def key_press_callback(e, *, assembly=None, plt=None, angle_step: float = 1.0, trans_step: float = 1.0):
     """
     Supported keys:
-      - Z-axis: E(-), R(+)
-      - Y-axis: D(-), F(+)
-      - X-axis: C(-), V(+)
-      - Exit: q, esc
-    Other keys ignored.
+      Rotation
+        - Z-axis: U(-), I(+)
+        - Y-axis: H(-), J(+)
+        - X-axis: B(-), N(+)
+      Translation
+        - X-axis: W(+), S(-)
+        - Y-axis: D(+), A(-)
+        - Z-axis: Space(+), Shift(-)
+      Exit: q, esc
+    Other keys are ignored.
     """
     key_raw = getattr(e, "keypress", "") or ""
     k = key_raw.lower()
 
+    # exit
     if k in ("q", "esc", "escape"):
         try:
             plt.close()
@@ -100,20 +128,23 @@ def key_press_callback(e, *, assembly=None, plt=None, angle_step: float = 1.0):
             vedo.close()
         return
 
-    if k == "e":
-        assembly.rotate_z(-angle_step)
-    elif k == "r":
-        assembly.rotate_z(+angle_step)
-    elif k == "d":
-        assembly.rotate_y(-angle_step)
-    elif k == "f":
-        assembly.rotate_y(+angle_step)
-    elif k == "c":
-        assembly.rotate_x(-angle_step)
-    elif k == "v":
-        assembly.rotate_x(+angle_step)
+    # --- rotation ---
+    if   k == "u": assembly.rotate_z(-angle_step)
+    elif k == "i": assembly.rotate_z(+angle_step)
+    elif k == "h": assembly.rotate_y(-angle_step)
+    elif k == "j": assembly.rotate_y(+angle_step)
+    elif k == "b": assembly.rotate_x(-angle_step)
+    elif k == "n": assembly.rotate_x(+angle_step)
+
+    # --- translation ---
+    elif k == "w": _shift_assembly(assembly, +trans_step, 0.0, 0.0)  # +X
+    elif k == "s": _shift_assembly(assembly, -trans_step, 0.0, 0.0)  # -X
+    elif k == "d": _shift_assembly(assembly, 0.0, +trans_step, 0.0)  # +Y
+    elif k == "a": _shift_assembly(assembly, 0.0, -trans_step, 0.0)  # -Y
+    elif k in (" ", "space"): _shift_assembly(assembly, 0.0, 0.0, +trans_step)  # +Z
+    elif k == "z": _shift_assembly(assembly, 0.0, 0.0, -trans_step)  # -Z
     else:
-        return
+        return  # ignore other keys
 
     try:
         plt.render()
@@ -121,7 +152,7 @@ def key_press_callback(e, *, assembly=None, plt=None, angle_step: float = 1.0):
         pass
 
 
-# -------- Main stage --------
+# -------- Main stage (only the binding part changed) ------------------------
 def stage_transform(cfgs):
     ms = pymeshlab.MeshSet()
     try:
@@ -171,14 +202,23 @@ def stage_transform(cfgs):
     except Exception:
         pass
 
+    # Choose sensible default translation step from model size
+    trans_step = max_len * 0.02 if np.isfinite(max_len) and max_len > 0 else 1.0
+
     # Bind external callback with partial
-    handler = partial(key_press_callback, assembly=assembly, plt=plt, angle_step=1.0)
+    handler = partial(
+        key_press_callback,
+        assembly=assembly,
+        plt=plt,
+        angle_step=1.0,
+        trans_step=trans_step,
+    )
     plt.add_callback('KeyPress', handler)
 
     plt.add(assembly, *axes)
     plt.show(interactive=True)
 
-
+    # accumulate and save
     fine_transform = assembly.transform.matrix
     total_T = fine_transform @ initial_transform
 
