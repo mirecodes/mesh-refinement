@@ -13,6 +13,8 @@ class RefinementConfig:
     """
     Centralizes all ms.* call parameters.
     """
+    do_flatten_bottom: bool = True
+
     params: dict = field(default_factory=lambda: {
         # 1) cleaning / components
         "meshing_remove_connected_component_by_diameter": {
@@ -37,14 +39,14 @@ class RefinementConfig:
         },
         # 4) decimation
         "meshing_decimation_quadric_edge_collapse": {
-            "targetfacenum": 20000,
+            "targetfacenum": 15000,
             "preservenormal": False,
         },
         # 5) remeshing
         "meshing_isotropic_explicit_remeshing": {
             "targetlen": PercentageValue(1.0),
             # 'iterations': 10,
-            # 'adaptive': False,
+            'adaptive': True,
             # 'selectedonly': False,
             # 'featuredeg': 30.0,
             # 'checksurfdist': True,
@@ -117,8 +119,9 @@ def stage_refine(cfgs):
     repair_mesh(ms)
 
     # Infill bottom occlusion
-    ms = flatten_bottom_hole(ms, target_z=0.0)
-    ms = fill_bottom_hole(ms)
+    if refCfgs.do_flatten_bottom:
+        ms = flatten_bottom_hole(ms, target_z=0.0)
+        ms = fill_bottom_hole(ms)
 
     # AUX: recovery
     repair_mesh(ms)

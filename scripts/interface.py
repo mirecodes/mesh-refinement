@@ -19,8 +19,8 @@ class SystemConfigs():
     enable_stage_align: bool = False
     enable_stage_refine: bool = False
     enable_stage_decompose: bool = False
-    enable_stage_segment: bool = True
-    enable_stage_articulate: bool = True
+    enable_stage_segment: bool = False
+    enable_stage_articulate: bool = False
     enable_stage_bind: bool = True
 
     # --------------------------------------------------------------------------
@@ -96,41 +96,26 @@ def execute_pipeline(cfgs: SystemConfigs):
     if cfgs.enable_stage_align:
         print("[info]: Running the alignment stage")
         stage_transform(cfgs)
-    else:
-        print("[info]: Loading the aligned meshset")
-        ms = load_from_saves(cfgs, 'transform')
 
     if cfgs.enable_stage_refine:
         print("[info]: Running the refinement stage")
         stage_refine(cfgs)
-    else:
-        print("[info]: Loading the refined meshset")
-        ms = load_from_saves(cfgs, 'refine')
 
     if cfgs.enable_stage_decompose:
         print("[info]: Running the decomposition stage")
         stage_decompose(cfgs)
-    else:
-        print("[info]: Loading the decomposed meshset")
-        ms = load_from_saves(cfgs, 'decompose')
 
     if cfgs.enable_stage_segment:
         print("[info]: Running the segmentation stage")
         stage_segment(cfgs)
-    else:
-        print("[info]: Loading the articulated meshset")
-        ms = load_from_saves(cfgs, 'segment')
 
     if cfgs.enable_stage_articulate:
         print("[info]: Running the articulation stage")
-        stage_articulate(cfgs, ms)
-    else:
-        print("[info]: Loading the articulated meshset")
-        ms = load_from_saves(cfgs, 'articulate')
+        stage_articulate(cfgs)
 
     if cfgs.enable_stage_bind:
         print("[info]: Running the binding stage")
-        stage_bind(cfgs, ms)
+        stage_bind(cfgs)
 
 
 

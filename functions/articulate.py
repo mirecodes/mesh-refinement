@@ -20,7 +20,7 @@ def _norm(v):
 
 def _to_str_xyz(v):
     v = np.asarray(v, dtype=float).ravel()
-    return f"{v[0]:.9g} {v[1]:.9g} {v[2]:.9g}"
+    return f"{v[0]:.9g} {v[1]:.9g} {fv[2]:.9g}"
 
 def _mapping_get(mapping, key):
     """dict-like 안전 접근 (None 또는 키 없음 시 None)."""
@@ -216,7 +216,7 @@ def generate_urdf(
 # ================================
 # Stage: articulate (minimal)
 # ================================
-def stage_articulate(cfgs, ms: pymeshlab.MeshSet):
+def stage_articulate(cfgs):
     # Load states
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
 
