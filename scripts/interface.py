@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 import pymeshlab
 from json_handler import JsonHandler
 
-from functions import stage_transform, stage_refine, stage_decompose, stage_segment, stage_articulate, stage_bind
+from functions import stage_transform, stage_refine, stage_decompose, stage_segment, stage_articulate, stage_bind, \
+    restore_transform
+
 
 @dataclass
 class SystemConfigs():
@@ -16,12 +18,13 @@ class SystemConfigs():
     json_config_path = "configs.json"
 
     # Operational controller
-    enable_stage_align: bool = False
+    enable_stage_align: bool = True
+    restore_align: bool = True
     enable_stage_refine: bool = False
     enable_stage_decompose: bool = False
     enable_stage_segment: bool = False
     enable_stage_articulate: bool = False
-    enable_stage_bind: bool = True
+    enable_stage_bind: bool = False
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
@@ -94,8 +97,12 @@ def execute_pipeline(cfgs: SystemConfigs):
     print("[info]: Execute the object importing pipeline")
 
     if cfgs.enable_stage_align:
-        print("[info]: Running the alignment stage")
-        stage_transform(cfgs)
+        if cfgs.restore_align:
+            restore_transform(cfgs)
+            print("[info]: Restoring the alignment")
+        else:
+            stage_transform(cfgs)
+            print("[info]: Running the alignment stage")
 
     if cfgs.enable_stage_refine:
         print("[info]: Running the refinement stage")
