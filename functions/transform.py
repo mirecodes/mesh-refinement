@@ -365,10 +365,10 @@ def _load_T_from_states(states_dir: str) -> np.ndarray:
     try:
         T_list = states.transform.matrix
     except Exception:
-        raise FileNotFoundError("[restore] states.transform.matrix not found. Run stage_transform first.")
+        raise FileNotFoundError("[error]: states.transform.matrix not found. Run stage_transform first.")
     T = np.asarray(T_list, dtype=np.float64)
     if T.shape != (4, 4):
-        raise ValueError(f"[restore] Invalid transform shape: {T.shape}, expected (4,4)")
+        raise ValueError(f"[error]: Invalid transform shape: {T.shape}, expected (4,4)")
     return T
 
 
@@ -399,7 +399,7 @@ def restore_transform(cfgs, *, overwrite: bool = True, suffix: str = "restored")
     try:
         ms.load_new_mesh(cfgs.mesh_in_dir)         # original mesh input
     except pymeshlab.PyMeshLabException as e:
-        raise FileNotFoundError(f"[restore] Failed to load mesh: {cfgs.mesh_in_dir}") from e
+        raise FileNotFoundError(f"[error]: Failed to load mesh: {cfgs.mesh_in_dir}") from e
 
     # 4) Apply & save mesh
     mesh = ms.current_mesh()
@@ -413,10 +413,10 @@ def restore_transform(cfgs, *, overwrite: bool = True, suffix: str = "restored")
             save_gaussian_with_transform(ply, gaussian_out, T4)
         except Exception as e:
             # Do not hard-fail on gaussian; surface result is still useful.
-            print(f"[restore] Warning: failed to process gaussian: {gaussian_path} ({e})")
+            print(f"[error]: failed to process gaussian: {gaussian_path} ({e})")
             gaussian_out = None
     else:
-        print(f"[restore] Info: gaussian_in_dir missing or not a file: {gaussian_path}")
+        print(f"[error]: gaussian_in_dir missing or not a file: {gaussian_path}")
         gaussian_out = None
 
     # 6) Persist outputs (do not overwrite matrix; only update dirs)
@@ -434,7 +434,3 @@ def restore_transform(cfgs, *, overwrite: bool = True, suffix: str = "restored")
         ms.clear()
     except Exception:
         pass
-
-    print(f"[restore] mesh -> {mesh_out}")
-    if gaussian_out:
-        print(f"[restore] gaussian -> {gaussian_out}")

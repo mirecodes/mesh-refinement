@@ -23,8 +23,8 @@ class SystemConfigs():
     enable_stage_refine: bool = False
     enable_stage_decompose: bool = False
     enable_stage_segment: bool = False
-    enable_stage_articulate: bool = False
-    enable_stage_bind: bool = False
+    enable_stage_articulate: bool = True
+    enable_stage_bind: bool = True
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations

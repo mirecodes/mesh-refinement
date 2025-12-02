@@ -9,6 +9,16 @@ from scipy.spatial import cKDTree
 from plyfile import PlyData, PlyElement
 
 
+# ------------------------------ config ----------------------------------------
+
+@dataclass
+class BindCfgs:
+    k_neighbors: int = 3            # fixed: use k=3
+    max_dist_rel: float = 0.10      # exclude if nearest vertex farther than this * mesh diagonal
+    z_cut_rel: float = -0.01        # exclude if Gaussian z < (z_cut_rel * mesh diagonal)
+    verbose: bool = True
+
+
 # ------------------------------ helpers ---------------------------------------
 
 def _get_positions(rec):
@@ -51,15 +61,6 @@ def _slice_vertex_in_ply(ply: PlyData, idxs):
     new_ply.comments = list(ply.comments)
     new_ply.obj_info = list(ply.obj_info)
     return new_ply
-
-
-# ------------------------------ config ----------------------------------------
-
-@dataclass
-class BindCfgs:
-    k_neighbors: int = 3           # fixed: use k=3
-    max_dist_rel: float = 0.02     # exclude if nearest vertex farther than 2% of mesh diagonal
-    verbose: bool = True
 
 
 # ------------------------------ core mapping ----------------------------------
@@ -125,7 +126,8 @@ def stage_bind(cfgs):
     Minimal bind:
       - Read mesh + vertex labels
       - Read Gaussian PLY
-      - Map each Gaussian to a part label via k=3 KNN (majority)
+      - Z-cut: drop Gaussians with z < z_cut_rel * diag
+      - Map remaining Gaussians via k=3 KNN (majority)
       - Drop Gaussians whose nearest vertex is too far
       - Save per-part PLYs, preserving all original fields/elements
     """
@@ -139,13 +141,28 @@ def stage_bind(cfgs):
     g_rec = g_ply['vertex'].data
     gauss_xyz = _get_positions(g_rec)
 
-    bind_cfgs = BindCfgs()  # k=3, max_dist_rel=0.02 by default
+    bind_cfgs = BindCfgs()  # k=3, thresholds from config
 
-    assigned = _assign_categories_knn3(
-        mesh, vert_labels, gauss_xyz,
+    # --- Z cut by relative threshold to mesh diagonal ---
+    diag = float(np.linalg.norm(mesh.bounds[1] - mesh.bounds[0]))
+    z_cut = bind_cfgs.z_cut_rel * diag
+    keep_z = gauss_xyz[:, 2] >= z_cut
+    if bind_cfgs.verbose:
+        print(f"[z-cut] diag={diag:.6g}, z_cut={z_cut:.6g}, kept {int(keep_z.sum())}/{len(gauss_xyz)}")
+
+    # Work only on survivors of z-cut
+    xyz_kept = gauss_xyz[keep_z]
+
+    # --- KNN assignment on z-kept points ---
+    assigned_kept = _assign_categories_knn3(
+        mesh, vert_labels, xyz_kept,
         k=bind_cfgs.k_neighbors,
         max_dist_rel=bind_cfgs.max_dist_rel
     )
+
+    # Rebuild full assignment array with -1 default
+    assigned = np.full(len(gauss_xyz), -1, dtype=np.int32)
+    assigned[keep_z] = assigned_kept
 
     if bind_cfgs.verbose:
         uniq, cnts = np.unique(assigned, return_counts=True)

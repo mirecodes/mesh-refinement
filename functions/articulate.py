@@ -20,7 +20,7 @@ def _norm(v):
 
 def _to_str_xyz(v):
     v = np.asarray(v, dtype=float).ravel()
-    return f"{v[0]:.9g} {v[1]:.9g} {fv[2]:.9g}"
+    return f"{v[0]:.9g} {v[1]:.9g} {v[2]:.9g}"
 
 def _mapping_get(mapping, key):
     """dict-like 안전 접근 (None 또는 키 없음 시 None)."""
@@ -243,11 +243,14 @@ def stage_articulate(cfgs):
     urdf_dir = generate_urdf(
         closed_parts=links,
         joints=joints,
-        out_dir=cfgs.urdf_working_dir,
+        out_dir=cfgs.urdf_out_dir,
         urdf_name="object",
         density=1000.0,   # 필요시 변경
         mesh_fmt="stl",
     )
+
+
+
     print(f"[info]: the urdf file has been generated in: {urdf_dir}")
 
     # Vedo viewer of the articulated object
