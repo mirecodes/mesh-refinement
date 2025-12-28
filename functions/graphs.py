@@ -393,6 +393,28 @@ def segregate_loops(adj: List[List[int]], boundary_indices: np.ndarray) -> List[
     return selected
 
 
+def identify_loop_neighbor(
+    loop: np.ndarray,
+    adj: List[List[int]],
+    vert_label: np.ndarray,
+    parent_label: int
+) -> int:
+    """
+    Identify the neighbor part ID for a given boundary loop.
+    Returns the most frequent neighbor label (excluding parent and <=0).
+    """
+    counts = defaultdict(int)
+    for u in loop:
+        for v in adj[u]:
+            l_v = int(vert_label[v])
+            # 0(배경)이나 자기 자신(parent)은 제외하고 카운트
+            if l_v > 0 and l_v != parent_label:
+                counts[l_v] += 1
+    if not counts:
+        return -1
+    return max(counts, key=counts.get)
+
+
 # ---------------------------------------------------------------------
 # Separators & splitting
 # ---------------------------------------------------------------------

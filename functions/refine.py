@@ -2,10 +2,52 @@ from dataclasses import dataclass, field
 import os
 import pymeshlab
 import trimesh
+import vedo
 from pymeshlab import PercentageValue
 from json_handler import JsonHandler
 
 from functions import repair_mesh, flatten_bottom_hole, fill_bottom_hole
+
+
+def debug_show_mesh(ms: pymeshlab.MeshSet, title: str):
+    """Helper to visualize the current mesh in a vedo window."""
+    if not isinstance(ms, pymeshlab.MeshSet) or ms.mesh_number() == 0:
+        print(f"[Debug Viewer] Skipping: Invalid MeshSet for '{title}'")
+        return
+    
+    print(f"[Debug Viewer] Showing: {title}")
+    
+    # PyMeshLab Mesh -> Trimesh -> Vedo Actor
+    try:
+        current_mesh = ms.current_mesh()
+        verts = current_mesh.vertex_matrix()
+        faces = current_mesh.face_matrix()
+        
+        if verts is None or faces is None or verts.size == 0 or faces.size == 0:
+            print(f"[Debug Viewer] Skipping '{title}': No geometry to show.")
+            return
+
+        # Create a vedo actor with default lightblue color
+        vedo_mesh = vedo.Mesh([verts, faces]).c("lightblue")
+        
+        # Try to apply vertex colors if they exist
+        try:
+            colors = current_mesh.vertex_color_matrix()
+            if colors is not None and colors.size > 0:
+                # Vedo expects colors in 0-255 range, uint8
+                if colors.max() <= 1.0:
+                    colors = (colors * 255).astype('uint8')
+                vedo_mesh.pointcolors(colors[:, :3]) # Use RGB, ignore alpha if present
+        except Exception:
+            # Could fail if no colors exist, just ignore.
+            pass
+
+        # Show the mesh
+        plt = vedo.Plotter(title=title, axes=1)
+        plt.show(vedo_mesh, title).close()
+
+    except Exception as e:
+        print(f"[Debug Viewer] Error displaying '{title}': {e}")
 
 
 @dataclass
@@ -74,7 +116,7 @@ class RefinementConfig:
     })
 
 
-def stage_refine(cfgs):
+def stage_refine(cfgs, debug_mode: bool = False):
     # Load configurations
     refCfgs = RefinementConfig()
     states = JsonHandler(cfgs.json_states_dir, auto_save=False)
@@ -83,6 +125,7 @@ def stage_refine(cfgs):
     ms = pymeshlab.MeshSet()
     mesh_in_dir = states.transform.dirs.mesh
     ms.load_new_mesh(mesh_in_dir)
+    if debug_mode: debug_show_mesh(ms, "0. Initial State")
 
     # --------------------------------------------------------------------------
     # Mesh Refinement Process
@@ -92,11 +135,13 @@ def stage_refine(cfgs):
     ms.meshing_remove_connected_component_by_diameter(
         **refCfgs.params["meshing_remove_connected_component_by_diameter"]
     )
+    if debug_mode: debug_show_mesh(ms, "1. After Component Cleaning")
 
     # 2) Reconstruction: Screened Poisson
     ms.generate_surface_reconstruction_screened_poisson(
         **refCfgs.params["generate_surface_reconstruction_screened_poisson"]
     )
+    if debug_mode: debug_show_mesh(ms, "2. After Poisson Reconstruction")
 
     # 3) Vertex selection (cut-off)
     ms.compute_selection_by_condition_per_vertex(
@@ -104,16 +149,19 @@ def stage_refine(cfgs):
     )
     if ms.current_mesh().selected_vertex_number() > 0:
         ms.meshing_remove_selected_vertices()
+    if debug_mode: debug_show_mesh(ms, "3. After Artifact Removal (z<0)")
 
     # 4) Decimation (edge collapse)
     ms.meshing_decimation_quadric_edge_collapse(
         **refCfgs.params["meshing_decimation_quadric_edge_collapse"]
     )
+    if debug_mode: debug_show_mesh(ms, "4. After Simplification")
 
     # 5) Remeshing (isotropic explicit)
     ms.meshing_isotropic_explicit_remeshing(
         **refCfgs.params["meshing_isotropic_explicit_remeshing"]
     )
+    if debug_mode: debug_show_mesh(ms, "5. After Isotropic Remeshing")
 
     # AUX: recovery
     repair_mesh(ms)
@@ -122,6 +170,7 @@ def stage_refine(cfgs):
     if refCfgs.do_flatten_bottom:
         ms = flatten_bottom_hole(ms, target_z=0.0)
         ms = fill_bottom_hole(ms)
+    if debug_mode: debug_show_mesh(ms, "6. After Occlusion Repair")
 
     # AUX: recovery
     repair_mesh(ms)
@@ -130,17 +179,19 @@ def stage_refine(cfgs):
     ms.meshing_close_holes(
         **refCfgs.params["meshing_close_holes"]
     )
+    if debug_mode: debug_show_mesh(ms, "7. After Hole Closing")
 
     # AUX: recovery
     repair_mesh(ms)
 
     # 7) Restore vertex colors (attribute transfer)
-    ms.load_new_mesh(mesh_in_dir)
-    ms.set_current_mesh(0)
+    ms.load_new_mesh(mesh_in_dir) # This is the source mesh (index 1)
+    ms.set_current_mesh(0) # Target mesh is the refined one
 
     ms.transfer_attributes_per_vertex(
         **refCfgs.params["transfer_attributes_per_vertex"]
     )
+    if debug_mode: debug_show_mesh(ms, "8. After Attribute Restoration")
 
     ms.set_current_mesh(1)
     ms.delete_current_mesh()

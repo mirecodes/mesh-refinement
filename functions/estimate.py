@@ -257,6 +257,7 @@ def learn_separator_main(
     sdf_thresh: float = 0.0,
     balance: str = "downsample",      # 'downsample' | 'weights' | 'none'
     random_state: int | None = 0,
+    visualize_results: bool = False,
 ) -> list[TypedDict]:
     """
     End-to-end learning of separating boundaries for a selected part.
@@ -285,19 +286,6 @@ def learn_separator_main(
     # (4) Get boundaries
     boundary_indices = filter_boundary_vertices(adj, vert_label, idx_part)
     loops = segregate_loops(adj, boundary_indices)
-
-    # visualize_boundary_loops(ms=ms,
-    #     categories=categories,
-    #     idx_part=idx_part,
-    #     loops=loops,
-    #     boundary_indices=boundary_indices,  # ← 함께 표시
-    #     show_original_mesh=True,
-    #     tube_radius=0.010,
-    #     sphere_radius=0.005,
-    #     boundary_point_size=0.005,
-    #     boundary_point_color="red",
-    #     background="white",
-    # )
 
     # normalize `method` to a list of methods to run
     if isinstance(method, (list, tuple)):
@@ -421,6 +409,21 @@ def learn_separator_main(
                 "plane": plane,
                 "score": score,
             }
+        
+        # (G) Visualize results if requested
+        if visualize_results:
+            for method_name in methods_to_run:
+                result_data = locals().get(f"result_{method_name}")
+                if result_data and result_data.get("plane"):
+                    visualize_k_hop_plane(
+                        verts=verts,
+                        faces=faces,
+                        idx_pos=np.unique(idx_pos),
+                        idx_neg=np.unique(idx_neg),
+                        planes=result_data["plane"],
+                        center=center,
+                        title=f"Loop {order}, Method: {method_name}"
+                    )
 
         results.append({
             # joint information
@@ -551,3 +554,48 @@ def visualize_boundary_loops(
             axes_actor = vedo.Axes(_axes_target)
     plt.show(actors + [axes_actor], viewup="z").close()
 
+
+def visualize_k_hop_plane(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    idx_pos: np.ndarray,
+    idx_neg: np.ndarray,
+    planes: list, # list of (n, d)
+    center: np.ndarray,
+    title: str = "k-hop neighbors and plane",
+):
+    """
+    Visualize k-hop neighbors and the estimated plane.
+    """
+    actors = []
+
+    # 1) original mesh (semi-transparent)
+    mesh = vedo.Mesh([verts, faces]).c("lightgray").alpha(0.2)
+    actors.append(mesh)
+
+    # 2) Positive and negative neighbor vertices
+    if idx_pos.size > 0:
+        pos_pts = vedo.Spheres(verts[idx_pos], r=0.005, c="lightblue", res=8).alpha(0.6)
+        actors.append(pos_pts)
+    if idx_neg.size > 0:
+        neg_pts = vedo.Spheres(verts[idx_neg], r=0.005, c="salmon", res=8).alpha(0.6)
+        actors.append(neg_pts)
+
+    # 3) Estimated plane(s)
+    plane_colors = ["green", "cyan", "magenta", "yellow"]
+    for i, (n, d) in enumerate(planes):
+        plane_pos = center - (np.dot(center, n) + d) * n
+        plane_actor = vedo.Plane(pos=plane_pos, normal=n, s=(1.0, 1.0)).c(plane_colors[i % len(plane_colors)]).alpha(0.5)
+        actors.append(plane_actor)
+
+    # 4) Show plot
+    plt = vedo.Plotter(bg="white", title=title)
+    _axes_target = mesh
+    try:
+        axes_actor = vedo.Axes(_axes_target, axesType=4, xyGrid=True)
+    except TypeError:
+        try:
+            axes_actor = vedo.Axes(_axes_target, xyGrid=True)
+        except TypeError:
+            axes_actor = vedo.Axes(_axes_target)
+    plt.show(actors + [axes_actor], viewup="z").close()

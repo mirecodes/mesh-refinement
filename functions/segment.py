@@ -567,7 +567,8 @@ def compute_separation_results(ms: pymeshlab.MeshSet,
                                categories_num: int,
                                adj,
                                vert_label,
-                               method: str = "all") -> List[dict]:
+                               method: str = "all",
+                               visualize_results: bool = False) -> List[dict]:
     """Run learn_separator_main per category and flatten outputs."""
     results: Dict[int, dict | List[dict]] = {}
     for idx_part in range(1, categories_num + 1):
@@ -576,7 +577,8 @@ def compute_separation_results(ms: pymeshlab.MeshSet,
             max_hops=10, method=method,
             C=1.0, gamma='scale',
             use_signed_dist=True, sdf_thresh=0.0,
-            balance='None'
+            balance='None',
+            visualize_results=visualize_results
         )
         results[idx_part] = out
     results_list = [item for v in results.values() for item in (v if isinstance(v, list) else [v])]
@@ -1124,7 +1126,7 @@ def stage_segment(cfgs):
     vert_label = classify_vertices(verts, categories, use_signed_dist=True).astype(int)
 
     # separation + clustering + vectors
-    results_list = compute_separation_results(ms, categories, categories_num, adj, vert_label, method="all")
+    results_list = compute_separation_results(ms, categories, categories_num, adj, vert_label, method="all", visualize_results=True)
     rlps = cluster_reciprocal_loop_pairs(results_list, w_pos=1.0, w_ang=0.5, cost_max=None)
     print(f"[info]: len rlps {len(rlps)}")
     prepare_vectors_for_rlps(rlps)

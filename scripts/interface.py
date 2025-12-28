@@ -19,12 +19,13 @@ class SystemConfigs():
 
     # Operational controller
     enable_stage_align: bool = True
-    restore_align: bool = True
-    enable_stage_refine: bool = False
+    restore_align: bool = False
+    enable_stage_refine: bool = True
     enable_stage_decompose: bool = False
     enable_stage_segment: bool = False
-    enable_stage_articulate: bool = True
-    enable_stage_bind: bool = True
+    enable_stage_articulate: bool = False
+    enable_stage_bind: bool = False
+    debug_mode: bool = True
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
@@ -106,7 +107,7 @@ def execute_pipeline(cfgs: SystemConfigs):
 
     if cfgs.enable_stage_refine:
         print("[info]: Running the refinement stage")
-        stage_refine(cfgs)
+        stage_refine(cfgs, debug_mode=cfgs.debug_mode)
 
     if cfgs.enable_stage_decompose:
         print("[info]: Running the decomposition stage")
