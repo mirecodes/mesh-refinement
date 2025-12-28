@@ -257,7 +257,6 @@ def learn_separator_main(
     sdf_thresh: float = 0.0,
     balance: str = "downsample",      # 'downsample' | 'weights' | 'none'
     random_state: int | None = 0,
-    visualize_results: bool = False,
 ) -> list[TypedDict]:
     """
     End-to-end learning of separating boundaries for a selected part.
@@ -286,6 +285,19 @@ def learn_separator_main(
     # (4) Get boundaries
     boundary_indices = filter_boundary_vertices(adj, vert_label, idx_part)
     loops = segregate_loops(adj, boundary_indices)
+
+    # visualize_boundary_loops(ms=ms,
+    #     categories=categories,
+    #     idx_part=idx_part,
+    #     loops=loops,
+    #     boundary_indices=boundary_indices,  # ← 함께 표시
+    #     show_original_mesh=True,
+    #     tube_radius=0.010,
+    #     sphere_radius=0.005,
+    #     boundary_point_size=0.005,
+    #     boundary_point_color="red",
+    #     background="white",
+    # )
 
     # normalize `method` to a list of methods to run
     if isinstance(method, (list, tuple)):
@@ -409,21 +421,6 @@ def learn_separator_main(
                 "plane": plane,
                 "score": score,
             }
-        
-        # (G) Visualize results if requested
-        if visualize_results:
-            for method_name in methods_to_run:
-                result_data = locals().get(f"result_{method_name}")
-                if result_data and result_data.get("plane"):
-                    visualize_k_hop_plane(
-                        verts=verts,
-                        faces=faces,
-                        idx_pos=np.unique(idx_pos),
-                        idx_neg=np.unique(idx_neg),
-                        planes=result_data["plane"],
-                        center=center,
-                        title=f"Loop {order}, Method: {method_name}"
-                    )
 
         results.append({
             # joint information
