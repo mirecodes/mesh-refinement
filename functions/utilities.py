@@ -89,6 +89,51 @@ def find_boundary_loops(t_mesh, verbose=False) -> list:
     return loops
 
 
+def find_largest_plane_ransac(points, threshold=0.01, iterations=1000):
+    """
+    Find the largest plane using RANSAC.
+    :param points: (N, 3) array of points
+    :param threshold: distance threshold for inliers
+    :param iterations: number of RANSAC iterations
+    :return: inlier_indices (boolean array)
+    """
+    n_points = points.shape[0]
+    if n_points < 3:
+        return np.zeros(n_points, dtype=bool)
+
+    best_inliers_count = -1
+    best_inliers_mask = np.zeros(n_points, dtype=bool)
+
+    # Downsample for hypothesis generation if too many points
+    sample_pool = np.arange(n_points)
+    
+    for _ in range(iterations):
+        # Sample 3 points
+        idx = np.random.choice(sample_pool, 3, replace=False)
+        pts = points[idx]
+        
+        v1 = pts[1] - pts[0]
+        v2 = pts[2] - pts[0]
+        normal = np.cross(v1, v2)
+        norm = np.linalg.norm(normal)
+        if norm < 1e-10: continue
+        normal /= norm
+        
+        # Plane equation: normal . (x - p0) = 0
+        # Distance = | normal . (x - p0) |
+        diff = points - pts[0]
+        dists = np.abs(np.dot(diff, normal))
+        
+        inliers_mask = dists < threshold
+        inliers_count = np.sum(inliers_mask)
+        
+        if inliers_count > best_inliers_count:
+            best_inliers_count = inliers_count
+            best_inliers_mask = inliers_mask
+
+    return best_inliers_mask
+
+
 def calculate_transforms(ms, verbose=False) -> (np.array, np.array):
     '''
     Calculate the transformation matrices given a mesh
@@ -100,14 +145,29 @@ def calculate_transforms(ms, verbose=False) -> (np.array, np.array):
     if verbose: print("[info] Function 'calculate_transforms' called")
     current_mesh = ms.current_mesh()
     t_mesh = trimesh.Trimesh(vertices=current_mesh.vertex_matrix(), faces=current_mesh.face_matrix())
+    
     loops_indices = find_boundary_loops(t_mesh)
-    if not loops_indices:
-        print("[warning] Boundary loop does not exist. Transform matrix cannot be calculated.")
-        return None, None
-
-    # get the largest loop (used as a bottom occlusion)
-    largest_loop_indices = max(loops_indices, key=len)
-    loop_verts = t_mesh.vertices[largest_loop_indices]
+    
+    loop_verts = None
+    
+    if loops_indices:
+        # get the largest loop (used as a bottom occlusion)
+        largest_loop_indices = max(loops_indices, key=len)
+        loop_verts = t_mesh.vertices[largest_loop_indices]
+    else:
+        print("[warning] Boundary loop does not exist. Trying to find the largest plane using RANSAC...")
+        # Estimate threshold based on mesh scale
+        bounds = t_mesh.bounds
+        scale = np.linalg.norm(bounds[1] - bounds[0])
+        threshold = scale * 0.005  # 0.5% of the diagonal
+        
+        inliers_mask = find_largest_plane_ransac(t_mesh.vertices, threshold=threshold)
+        if np.sum(inliers_mask) < 3:
+             print("[error] RANSAC failed to find a valid plane.")
+             return None
+             
+        loop_verts = t_mesh.vertices[inliers_mask]
+        print(f"[info] RANSAC found plane with {len(loop_verts)} inliers.")
 
     # estimate the planar information of the bottom occlusion
     pca = PCA(n_components=3)
