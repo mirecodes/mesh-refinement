@@ -533,6 +533,7 @@ def cluster_reciprocal_loop_pairs(
     w_pos: float = 1.0,
     w_ang: float = 0.5,
     cost_max: float | None = None,  # 매칭 허용 상한(선택)
+    verbose: bool = False
 ) -> List[Dict]:
     """
     results: learn_separator_main per-loop 결과 리스트.
@@ -549,6 +550,9 @@ def cluster_reciprocal_loop_pairs(
         'cost': float,                       # 매칭 비용
        }
     """
+    if verbose:
+        print(f"[info] cluster_reciprocal_loop_pairs: Clustering {len(results)} loop results...")
+
     # 1) 파트쌍 단위로 그룹핑 (무순서 쌍)
     buckets: Dict[Tuple[int, int], Dict[str, List[Dict]]] = {}
     for it in results:
@@ -562,27 +566,73 @@ def cluster_reciprocal_loop_pairs(
             buckets[key] = {"A": [], "B": []}
         buckets[key][dir_key].append(it)
 
+    if verbose:
+        print(f"[info]   Found {len(buckets)} potential part pairs.")
+
     RLPs: List[Dict] = []
 
     # 2) 각 파트쌍마다 최소 비용 매칭
-    for (i, j), grp in buckets.items():
+    for idx, ((i, j), grp) in enumerate(buckets.items()):
         A = grp["A"]  # i->j
         B = grp["B"]  # j->i
-        if not A or not B:
-            continue  # 한쪽 방향만 있으면 매칭 불가
-        C = _build_cost_matrix(A, B, w_pos=w_pos, w_ang=w_ang)
-        pairs = _hungarian_or_greedy(C)
+        
+        if verbose:
+            print(f"[info]   Processing pair {idx+1}/{len(buckets)}: parts {i} <-> {j}")
+            print(f"[info]     Found {len(A)} loops for {i}->{j} and {len(B)} loops for {j}->{i}")
+            
+        pairs_to_process = [] # list of (a, b, cost)
+        
+        if A and B:
+            C = _build_cost_matrix(A, B, w_pos=w_pos, w_ang=w_ang)
+            matched_indices = _hungarian_or_greedy(C)
+            for ia, ib in matched_indices:
+                pairs_to_process.append((A[ia], B[ib], float(C[ia, ib])))
+            
+        #TODO: remove one sided matching
+        elif A and not B:
+            if verbose:
+                print(f"[info]     One-sided (A only): Creating {len(A)} virtual B loops.")
+            for a in A:
+                # Create virtual B
+                b = a.copy()
+                b["parent"] = a["child"]
+                b["child"] = a["parent"]
+                # b["center"] remains same
+                if "pca_normal" in a:
+                    b["pca_normal"] = -np.asarray(a["pca_normal"])
+                b["linear"] = {}
+                b["polyhedral"] = {}
+                b["loop"] = []
+                
+                pairs_to_process.append((a, b, 0.0)) # Cost 0 or penalty?
+                
+        elif B and not A:
+            if verbose:
+                print(f"[info]     One-sided (B only): Creating {len(B)} virtual A loops.")
+            for b in B:
+                # Create virtual A
+                a = b.copy()
+                a["parent"] = b["child"]
+                a["child"] = b["parent"]
+                if "pca_normal" in b:
+                    a["pca_normal"] = -np.asarray(b["pca_normal"])
+                a["linear"] = {}
+                a["polyhedral"] = {}
+                a["loop"] = []
+                
+                pairs_to_process.append((a, b, 0.0))
 
+        count_new_rlps = 0
         # 3) 페어 생성 (코스트 상한 필터)
-        for ia, ib in pairs:
-            cost = float(C[ia, ib])
+        for a, b, cost in pairs_to_process:
             if (cost_max is not None) and (cost > cost_max):
                 continue
-            a = A[ia]; b = B[ib]
+            
             ca = np.asarray(a["center"], dtype=float)
             cb = np.asarray(b["center"], dtype=float)
-            na = normalize(np.asarray(a["pca_normal"], dtype=float))
-            nb = normalize(np.asarray(b["pca_normal"], dtype=float))
+            na = normalize(np.asarray(a.get("pca_normal", [0,0,1]), dtype=float))
+            nb = normalize(np.asarray(b.get("pca_normal", [0,0,1]), dtype=float))
+            
             # normal 방향 정합
             if float(np.dot(na, nb)) < 0.0:
                 nb = -nb
@@ -595,6 +645,13 @@ def cluster_reciprocal_loop_pairs(
                 "normal": n_pair,
                 "cost": cost,
             })
+            count_new_rlps += 1
+            
+        if verbose:
+            print(f"[info]     Synthesized {count_new_rlps} RLPs for pair {i} <-> {j}")
+            
+    if verbose:
+        print(f"[info] cluster_reciprocal_loop_pairs: Done. Found {len(RLPs)} RLPs.")
 
     # 4) 정렬(코스트 오름차순) 또는 길이 등 다른 기준도 가능
     RLPs.sort(key=lambda d: d["cost"])

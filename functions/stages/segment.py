@@ -25,10 +25,17 @@ def compute_separation_results(ms: pymeshlab.MeshSet,
                                adj,
                                vert_label,
                                method: str = "all",
-                               visualize_results: bool = False) -> List[dict]:
+                               visualize_results: bool = False,
+                               verbose: bool = False) -> List[dict]:
     """Run learn_separator_main per category and flatten outputs."""
     results: Dict[int, dict | List[dict]] = {}
+    if verbose:
+        print(f"[info] compute_separation_results: Processing {categories_num} categories...")
+        
     for idx_part in range(1, categories_num + 1):
+        if verbose:
+            print(f"[info]   Processing category {idx_part}/{categories_num}...")
+            
         out = learn_separator_main(
             ms, categories, idx_part, adj, vert_label,
             max_hops=10, method=method,
@@ -38,7 +45,12 @@ def compute_separation_results(ms: pymeshlab.MeshSet,
             visualize_results=visualize_results
         )
         results[idx_part] = out
+        
     results_list = [item for v in results.values() for item in (v if isinstance(v, list) else [v])]
+    
+    if verbose:
+        print(f"[info] compute_separation_results: Done. Total results: {len(results_list)}")
+        
     return results_list
 
 
@@ -196,6 +208,9 @@ def stage_segment(cfgs):
     4) Patch fill (harmonic) and append to meshes
     5) Persist states (states.segment.*)
     """
+    if cfgs.debug_mode:
+        print("[info] Stage Segment: Start")
+
     # load states & base mesh
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
     parts = [trimesh.load(states.decompose.dirs.mesh[i]) for i in range(states.decompose.length)]
@@ -212,6 +227,7 @@ def stage_segment(cfgs):
     
     # selection UI
     if cfgs.debug_mode:
+        print("[info] Step 1/7: Interactive Part Selection")
         print("=" * 60)
         print("PART SELECTION STAGE CONTROLS:")
         print("  Mouse:")
@@ -233,18 +249,38 @@ def stage_segment(cfgs):
          # Fallback logic if needed, or just proceed (likely failing later).
 
     # adjacency, vertex labels
+    if cfgs.debug_mode:
+        print("[info] Step 2/7: Building Adjacency Graph & Labeling Vertices")
     adj = build_adjacency_graph(faces, len(verts))
     vert_label = classify_vertices(verts, categories, use_signed_dist=True).astype(int)
 
     # separation + clustering + vectors
-    results_list = compute_separation_results(ms, categories, categories_num, adj, vert_label, method="all", visualize_results=cfgs.debug_mode)
-    rlps = cluster_reciprocal_loop_pairs(results_list, w_pos=1.0, w_ang=0.5, cost_max=None)
-    print(f"[info]: len rlps {len(rlps)}")
+    if cfgs.debug_mode:
+        print("[info] Step 3/7: Computing Separation & Clustering RLPs")
+    
+    results_list = compute_separation_results(
+        ms, categories, categories_num, adj, vert_label, 
+        method="all", 
+        visualize_results=cfgs.debug_mode,
+        verbose=cfgs.debug_mode
+    )
+    
+    rlps = cluster_reciprocal_loop_pairs(
+        results_list, 
+        w_pos=1.0, w_ang=0.5, cost_max=None,
+        verbose=cfgs.debug_mode
+    )
+    
+    if cfgs.debug_mode:
+        print(f"[info]: len rlps {len(rlps)}")
+        print("[info] Step 4/7: Augmenting Vectors")
+        
     prepare_vectors_for_rlps(rlps)
     augment_vectors_for_pairs_with_map(rlps, min_count=2)  # optional
 
     # vector selection UI (RLP-wise)
     if cfgs.debug_mode:
+        print("[info] Step 5/7: Interactive Vector Selection")
         print("=" * 60)
         print("VECTOR SELECTION STAGE CONTROLS (Per RLP Window):")
         print("  Mouse:")
@@ -262,6 +298,9 @@ def stage_segment(cfgs):
     visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces, display=cfgs.debug_mode)
 
     # save per-link meshes
+    if cfgs.debug_mode:
+        print("[info] Step 6/7: Saving Segmented Meshes & Joints")
+        
     seg_dir = os.path.join(os.path.dirname(cfgs.json_states_dir), "segment_mesh")
     segment_mesh_paths = save_link_meshes_from_labels(verts, faces, vert_label, categories_num, seg_dir)
     joints = build_joints_from_rlps(rlps)
@@ -274,5 +313,11 @@ def stage_segment(cfgs):
     states.segment.joints = joints
 
     # patch fill & append
+    if cfgs.debug_mode:
+        print("[info] Step 7/7: Generating Patches & Appending to Meshes")
+        
     patch_vertices, patch_faces = build_extrapoints_and_patches(results_list, verts)
     append_patches_to_mesh_files(segment_mesh_paths, patch_vertices, patch_faces)
+
+    if cfgs.debug_mode:
+        print("[info] Stage Segment: Completed")
