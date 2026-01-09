@@ -57,12 +57,11 @@ def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", vo
 
 # --- 실행 예시 ---
 if __name__ == "__main__":
-    my_urdf = "toilet/mobility.urdf"
+    my_urdf = "faucet/mobility.urdf"
     my_config = {
         'joint_0': 0.0,
-        'joint_1': np.pi / 3,
-        'joint_2': np.pi / 6,
-        'joint_3': 0.0,
+        'joint_1': 0,
+        'joint_2': 0,
     }
 
     import os
