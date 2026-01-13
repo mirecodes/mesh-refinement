@@ -203,13 +203,29 @@ def build_tree(joints):
         children_of.setdefault(p, []).append(c)
     return parent_of, joint_by_child, children_of
 
-def gather_link_frame_origins(joints, base_origin=np.zeros(3)):
+def gather_link_frame_origins(joints, base_origin=np.zeros(3), transform_matrix=None):
     """link_id -> world에서의 link 프레임 원점(=해당 조인트 origin). base(0)는 base_origin."""
     base_origin = np.asarray(base_origin, float)
+    
+    # Apply transform to base_origin if needed
+    if transform_matrix is not None:
+        # Transform point: p' = T * p
+        # Homogeneous coords
+        p_h = np.append(base_origin, 1.0)
+        p_trans = np.dot(transform_matrix, p_h)
+        base_origin = p_trans[:3] / p_trans[3]
+
     link_o = {0: base_origin}
     for j in joints:
         c = int(j["child"])
         o = np.asarray(j["axis"]["origin"], dtype=float)
+        
+        # Apply transform to joint origin if needed
+        if transform_matrix is not None:
+            p_h = np.append(o, 1.0)
+            p_trans = np.dot(transform_matrix, p_h)
+            o = p_trans[:3] / p_trans[3]
+            
         link_o[c] = o
         p = int(j["parent"])
         link_o.setdefault(p, base_origin)
@@ -224,13 +240,18 @@ def generate_urdf(
     density: float = 1000.0,
     mesh_fmt: str = "stl",
     base_origin=(0.0, 0.0, 0.0),
+    transform_matrix: np.ndarray = None, # Added parameter
 ):
     os.makedirs(out_dir, exist_ok=True)
+    
+    # Export meshes (WITHOUT applying transform, as requested)
     mesh_paths = export_meshes(closed_parts, os.path.join(out_dir, "meshes"), fmt=mesh_fmt)
 
     parent_of, joint_by_child, children_of = build_tree(joints)
     link_ids = sorted(closed_parts.keys())
-    link_frame_origin = gather_link_frame_origins(joints, base_origin=np.asarray(base_origin, float))
+    
+    # Gather link origins (applying transform if provided)
+    link_frame_origin = gather_link_frame_origins(joints, base_origin=np.asarray(base_origin, float), transform_matrix=transform_matrix)
 
     robot = ET.Element("robot", name=urdf_name)
 
@@ -245,11 +266,20 @@ def generate_urdf(
     for lid in link_ids:
         link = ET.SubElement(robot, "link", name=f"link_{lid}")
         mesh = closed_parts[lid]
+        
+        # Compute mass/inertia on the transformed mesh if needed
+        # Or compute on original and rotate inertia? 
+        # Easier to transform mesh temporarily for calculation if transform is rigid.
+        mesh_for_calc = mesh.copy()
+        if transform_matrix is not None:
+            mesh_for_calc.apply_transform(transform_matrix)
 
-        mass, com_world, I_com = compute_mass_inertia_at_com(mesh, density=density)
+        mass, com_world, I_com = compute_mass_inertia_at_com(mesh_for_calc, density=density)
         link_o_world = link_frame_origin.get(lid, np.zeros(3))
 
         # visual / collision: 메쉬는 world 좌표라고 가정 → link frame(origin=joint origin)으로 평행이동만
+        # If transform_matrix is applied, mesh_paths point to transformed meshes, and link_o_world is transformed.
+        # So relative position calculation remains valid in the new frame.
         rel_xyz = to_str_xyz(np.asarray([0, 0, 0], float) - link_o_world)
 
         visual = ET.SubElement(link, "visual")
@@ -278,7 +308,14 @@ def generate_urdf(
         child_name = f"link_{child}"
 
         # joint origin (parent 프레임 기준)
+        # j["axis"]["origin"] is in original world frame (before transform_matrix application inside this function)
+        # We need to transform it if transform_matrix is present.
         joint_world_o = np.asarray(j["axis"]["origin"], dtype=float)
+        if transform_matrix is not None:
+            p_h = np.append(joint_world_o, 1.0)
+            p_trans = np.dot(transform_matrix, p_h)
+            joint_world_o = p_trans[:3] / p_trans[3]
+            
         parent_world_o = link_frame_origin.get(parent, np.zeros(3))
         joint_in_parent = joint_world_o - parent_world_o
 
@@ -307,12 +344,30 @@ def generate_urdf(
             n_raw = mapping_get(j, "axis")
             n_vec = mapping_get(n_raw, "n") if isinstance(n_raw, dict) else None
             axis = normalize(n_vec if n_vec is not None else [0, 0, 1])
+            
+            # Apply rotation to axis if transform_matrix is present
+            if transform_matrix is not None:
+                # Transform vector: v' = R * v
+                R = transform_matrix[:3, :3]
+                axis = normalize(np.dot(R, axis))
+
             ET.SubElement(j_el, "axis", xyz=to_str_xyz(axis))
 
         # limit은 revolute / prismatic만 지정
         if urdf_type in ("revolute", "prismatic"):
             # 필요 시 값 튜닝
             ET.SubElement(j_el, "limit", lower="-1.57", upper="1.57", effort="10.0", velocity="1.0")
+
+    # Add base_joint (fixed) connecting base to link_1
+    # This ensures the robot is rooted at the base link
+    if 1 in link_ids:
+        base_joint = ET.SubElement(robot, "joint", name="base_joint", type="fixed")
+        ET.SubElement(base_joint, "parent", link="base")
+        ET.SubElement(base_joint, "child", link="link_1")
+        
+        # Origin of link_1 in world frame (which is base frame)
+        link1_origin = link_frame_origin.get(1, np.zeros(3))
+        ET.SubElement(base_joint, "origin", xyz=to_str_xyz(link1_origin), rpy="0 0 0")
 
     # save
     tree = ET.ElementTree(robot)

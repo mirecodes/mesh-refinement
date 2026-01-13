@@ -21,11 +21,16 @@ class SystemConfigs():
     enable_stage_align: bool = False
     restore_align: bool = True
     enable_stage_refine: bool = False
-    enable_stage_decompose: bool = True
-    enable_stage_segment: bool = True
+    enable_stage_decompose: bool = False
+    enable_stage_segment: bool = False
     enable_stage_articulate: bool = True
     enable_stage_bind: bool = True
     debug_mode: bool = True
+    
+    # URDF Generation Option
+    # If True, the URDF will be generated in the original coordinate system (before transform).
+    # If False, it will be in the transformed coordinate system.
+    urdf_use_original_coordinates: bool = True
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
