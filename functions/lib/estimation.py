@@ -7,7 +7,7 @@ from sklearn.svm import LinearSVC, SVC
 
 from functions.lib.graph import (
     build_adjacency_graph, filter_boundary_vertices, segregate_loops, 
-    filter_proximal_vertices
+    filter_proximal_vertices, identify_loop_neighbor, extract_boundary_loops_robust
 )
 from functions.lib.visualization import visualize_k_hop_plane
 
@@ -230,10 +230,13 @@ def learn_separator_main(
     balance: str = "downsample",      # 'downsample' | 'weights' | 'none'
     random_state: int | None = 0,
     visualize_results: bool = False,
+    neighbor_threshold: float = 0.25, # Added parameter
 ) -> list[TypedDict]:
     """
     End-to-end learning of separating boundaries for a selected part.
     """
+    print(f"[info] Starting learn_separator_main for part {idx_part}...")
+    
     # (0) Original mesh
     ms.set_current_mesh(0)
     verts = ms.current_mesh().vertex_matrix()
@@ -245,8 +248,14 @@ def learn_separator_main(
         raise RuntimeError("[error]: Target part has no included vertices. Check watertight/SDF settings.")
 
     # (4) Get boundaries
+    print(f"[info] Finding boundary loops for part {idx_part}...")
     boundary_indices = filter_boundary_vertices(adj, vert_label, idx_part)
     loops = segregate_loops(adj, boundary_indices)
+    
+    # Use extract_boundary_loops_robust instead of segregate_loops
+    # loops = extract_boundary_loops_robust(verts, faces, idx_seeds)
+
+    print(f"[info] Found {len(loops)} loops for part {idx_part}.")
 
     # normalize `method` to a list of methods to run
     if isinstance(method, (list, tuple)):
@@ -260,6 +269,8 @@ def learn_separator_main(
 
     # (5) Iterate through the entire loops
     for order, loop in enumerate(loops):
+        print(f"[info] Processing loop {order+1}/{len(loops)} (size: {len(loop)})...")
+        
         # (A) Find the neighborhood vertices (hop < K)
         idx_neighbor, dist = filter_proximal_vertices(adj, vert_label, loop, idx_part, max_hops)
 
@@ -268,15 +279,18 @@ def learn_separator_main(
         idx_pos = idx_neighbor[neighbor_label == idx_part]
         idx_neg = idx_neighbor[(neighbor_label > 0) & (neighbor_label != idx_part)]
 
-        # (C) Find the most frequently contact neighbor
+        # (C) Find the most frequently contact neighbor(s)
         idx_nbr_dist1, dist1 = filter_proximal_vertices(adj, vert_label, loop, idx_part, 2)
-        prox_nbr_label = vert_label[idx_nbr_dist1]
-        idx_prox_nbr = idx_nbr_dist1[(prox_nbr_label > 0) & (prox_nbr_label != idx_part)]
-        if idx_prox_nbr.size > 0:
-             values, counts = np.unique(vert_label[idx_prox_nbr], return_counts=True)
-             freq_prox_nbr = values[np.argmax(counts)]
-        else:
-             freq_prox_nbr = -1
+        
+        # Use identify_loop_neighbor with threshold
+        freq_prox_nbrs = identify_loop_neighbor(
+            loop, adj, vert_label, idx_part, neighbor_threshold=neighbor_threshold
+        )
+        
+        # If no neighbors found (should be rare if loop is on boundary), skip or handle
+        if not freq_prox_nbrs:
+             print(f"[warn] loop {order} has no valid neighbors.")
+             continue
 
         # (D) Estimate PCA plane normal of the loop points
         loop_idx = np.asarray(loop, dtype=int).ravel()
@@ -306,6 +320,7 @@ def learn_separator_main(
             continue
 
         # (F) Train one or more variants
+        print(f"[info] Training separators for loop {order+1}...")
         result_linear = {}
         result_rbf = {}
         result_polyhedral = {}
@@ -384,20 +399,23 @@ def learn_separator_main(
                         display=visualize_results
                     )
 
-        results.append({
-            "parent": idx_part,
-            "child": freq_prox_nbr,
-            "loop": loop,
-            "center": center,
-            "pca_normal": pca_normal,
-            "vert_label": vert_label,
-            "idx_pos": np.unique(idx_pos),
-            "idx_neg": np.unique(idx_neg),
-            "idx_neighbor": idx_neighbor,
-            "dist": dist,
-            "linear": result_linear,
-            "rbf": result_rbf,
-            "polyhedral": result_polyhedral,
-        })
-
+        # Duplicate result for each identified neighbor
+        for nbr in freq_prox_nbrs:
+            results.append({
+                "parent": idx_part,
+                "child": nbr,
+                "loop": loop,
+                "center": center,
+                "pca_normal": pca_normal,
+                "vert_label": vert_label,
+                "idx_pos": np.unique(idx_pos),
+                "idx_neg": np.unique(idx_neg),
+                "idx_neighbor": idx_neighbor,
+                "dist": dist,
+                "linear": result_linear,
+                "rbf": result_rbf,
+                "polyhedral": result_polyhedral,
+            })
+    
+    print(f"[info] Finished learn_separator_main for part {idx_part}. Generated {len(results)} results.")
     return results

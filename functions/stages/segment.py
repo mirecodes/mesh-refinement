@@ -25,25 +25,31 @@ def compute_separation_results(ms: pymeshlab.MeshSet,
                                adj,
                                vert_label,
                                method: str = "all",
-                               visualize_results: bool = False) -> List[dict]:
+                               visualize_results: bool = False,
+                               neighbor_threshold: float = 0.25) -> List[dict]:
     """Run learn_separator_main per category and flatten outputs."""
     results: Dict[int, dict | List[dict]] = {}
+    print(f"[info] Starting separation computation for {categories_num} categories...")
     for idx_part in range(1, categories_num + 1):
+        print(f"[info] Processing category {idx_part}/{categories_num}...")
         out = learn_separator_main(
             ms, categories, idx_part, adj, vert_label,
             max_hops=10, method=method,
             C=1.0, gamma='scale',
             use_signed_dist=True, sdf_thresh=0.0,
             balance='None',
-            visualize_results=visualize_results
+            visualize_results=visualize_results,
+            neighbor_threshold=neighbor_threshold
         )
         results[idx_part] = out
     results_list = [item for v in results.values() for item in (v if isinstance(v, list) else [v])]
+    print(f"[info] Separation computation finished. Total results: {len(results_list)}")
     return results_list
 
 
 def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
     """Create vector candidates on each RLP from plane/normal info."""
+    print(f"[info] Preparing vectors for {len(rlps)} RLPs...")
     for rlp in rlps:
         center = rlp['center']
         A = rlp['a']['linear']; B = rlp['b']['linear']
@@ -68,11 +74,13 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
                 for v in range(u + 1, m):
                     n = np.cross(planes[u][0], planes[v][0])
                     rlp['vectors'].append({'center': center, 'n': n, 'd': np.zeros(3)})
+    print("[info] Vector preparation finished.")
 
 
 def build_extrapoints_and_patches(results_list: List[dict],
                                   verts: np.ndarray):
     """For each loop: dense sampling + triangulated patch."""
+    print("[info] Building extra points and patches...")
     patch_vertices: Dict[int, List[np.ndarray]] = defaultdict(list)
     patch_faces: Dict[int, List[np.ndarray]] = defaultdict(list)
     for res in results_list:
@@ -85,6 +93,7 @@ def build_extrapoints_and_patches(results_list: List[dict],
         if P3.size and F.size:
             patch_vertices[pid].append(P3.astype(float))
             patch_faces[pid].append(F.astype(np.int64))
+    print("[info] Patch building finished.")
     return patch_vertices, patch_faces
 
 
@@ -179,10 +188,12 @@ def augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
 
 def augment_vectors_for_pairs_with_map(rlps: List[dict], min_count: int = 2) -> None:
     """Add pair-level suggestions only when an (i,j) pair has ≥ min_count RLPs."""
+    print("[info] Augmenting vectors for pairs...")
     link_map = build_link_map(rlps)
     for _, idxs in link_map.items():
         if len(idxs) >= min_count:
             augment_for_group(rlps, idxs)
+    print("[info] Vector augmentation finished.")
 
 
 # =============================================================================
@@ -196,7 +207,11 @@ def stage_segment(cfgs):
     4) Patch fill (harmonic) and append to meshes
     5) Persist states (states.segment.*)
     """
+    print("=" * 60)
+    print("[info] Starting stage_segment...")
+    
     # load states & base mesh
+    print("[info] Loading states and base mesh...")
     states = JsonHandler(cfgs.json_states_dir, auto_save=True)
     parts = [trimesh.load(states.decompose.dirs.mesh[i]) for i in range(states.decompose.length)]
 
@@ -222,7 +237,9 @@ def stage_segment(cfgs):
         print("    Q / Esc     : Finish and Proceed")
         print("=" * 60)
 
+    print("[info] Starting interactive part selection...")
     categories, belongings, rand_colors = select_parts_interactive(parts, verts, faces, categories_num, display=cfgs.debug_mode)
+    print("[info] Part selection finished.")
     
     # Manually fill categories if UI skipped (not handled here fully, assumed user wants UI if debug_mode is True)
     # If debug_mode is false, select_parts_interactive returns empty categories. 
@@ -233,13 +250,26 @@ def stage_segment(cfgs):
          # Fallback logic if needed, or just proceed (likely failing later).
 
     # adjacency, vertex labels
+    print("[info] Building adjacency graph and classifying vertices...")
     adj = build_adjacency_graph(faces, len(verts))
     vert_label = classify_vertices(verts, categories, use_signed_dist=True).astype(int)
+    print("[info] Graph build and classification finished.")
 
     # separation + clustering + vectors
-    results_list = compute_separation_results(ms, categories, categories_num, adj, vert_label, method="all", visualize_results=cfgs.debug_mode)
+    # Pass neighbor_threshold from cfgs if available, else default to 0.25
+    neighbor_threshold = getattr(cfgs, 'neighbor_threshold', 0.25)
+    
+    print("[info] Computing separation results...")
+    results_list = compute_separation_results(
+        ms, categories, categories_num, adj, vert_label, 
+        method="all", visualize_results=cfgs.debug_mode,
+        neighbor_threshold=neighbor_threshold
+    )
+    
+    print("[info] Clustering reciprocal loop pairs (RLPs)...")
     rlps = cluster_reciprocal_loop_pairs(results_list, w_pos=1.0, w_ang=0.5, cost_max=None)
     print(f"[info]: len rlps {len(rlps)}")
+    
     prepare_vectors_for_rlps(rlps)
     augment_vectors_for_pairs_with_map(rlps, min_count=2)  # optional
 
@@ -259,20 +289,31 @@ def stage_segment(cfgs):
         print("    Q / Esc   : Finish current window")
         print("=" * 60)
 
+    print("[info] Starting interactive vector selection...")
     visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces, display=cfgs.debug_mode)
+    print("[info] Vector selection finished.")
 
     # save per-link meshes
+    print("[info] Saving link meshes...")
     seg_dir = os.path.join(os.path.dirname(cfgs.json_states_dir), "segment_mesh")
     segment_mesh_paths = save_link_meshes_from_labels(verts, faces, vert_label, categories_num, seg_dir)
     joints = build_joints_from_rlps(rlps)
+    print("[info] Link meshes saved.")
 
     # persist states
+    print("[info] Persisting states...")
     states.segment = {}
     states.segment.vert_label = vert_label.tolist()
     states.segment.dirs = {}
     states.segment.dirs.mesh = segment_mesh_paths
     states.segment.joints = joints
+    print("[info] States persisted.")
 
     # patch fill & append
+    print("[info] Building and appending patches...")
     patch_vertices, patch_faces = build_extrapoints_and_patches(results_list, verts)
     append_patches_to_mesh_files(segment_mesh_paths, patch_vertices, patch_faces)
+    print("[info] Patches appended.")
+    
+    print("[info] stage_segment finished successfully.")
+    print("=" * 60)

@@ -132,10 +132,10 @@ def stage_refine(cfgs, debug_mode: bool = False):
     # --------------------------------------------------------------------------
 
     # 1) Cleaning: remove small connected components
-    ms.meshing_remove_connected_component_by_diameter(
-        **refCfgs.params["meshing_remove_connected_component_by_diameter"]
-    )
-    if debug_mode: debug_show_mesh(ms, "1. After Component Cleaning")
+    # ms.meshing_remove_connected_component_by_diameter(
+    #     **refCfgs.params["meshing_remove_connected_component_by_diameter"]
+    # )
+    # if debug_mode: debug_show_mesh(ms, "1. After Component Cleaning")
 
     # 2) Reconstruction: Screened Poisson
     # ms.generate_surface_reconstruction_screened_poisson(
@@ -144,12 +144,12 @@ def stage_refine(cfgs, debug_mode: bool = False):
     # if debug_mode: debug_show_mesh(ms, "2. After Poisson Reconstruction")
 
     # 3) Vertex selection (cut-off)
-    ms.compute_selection_by_condition_per_vertex(
-        **refCfgs.params["compute_selection_by_condition_per_vertex"]
-    )
-    if ms.current_mesh().selected_vertex_number() > 0:
-        ms.meshing_remove_selected_vertices()
-    if debug_mode: debug_show_mesh(ms, "3. After Artifact Removal (z<0)")
+    # ms.compute_selection_by_condition_per_vertex(
+    #     **refCfgs.params["compute_selection_by_condition_per_vertex"]
+    # )
+    # if ms.current_mesh().selected_vertex_number() > 0:
+    #     ms.meshing_remove_selected_vertices()
+    # if debug_mode: debug_show_mesh(ms, "3. After Artifact Removal (z<0)")
 
     # 4) Decimation (edge collapse)
     ms.meshing_decimation_quadric_edge_collapse(
@@ -167,35 +167,35 @@ def stage_refine(cfgs, debug_mode: bool = False):
     repair_mesh(ms)
 
     # Infill bottom occlusion
-    if refCfgs.do_flatten_bottom:
-        ms = flatten_bottom_hole(ms, target_z=0.0)
-        ms = fill_bottom_hole(ms)
-    if debug_mode: debug_show_mesh(ms, "6. After Occlusion Repair")
+    # if refCfgs.do_flatten_bottom:
+    #     ms = flatten_bottom_hole(ms, target_z=0.0)
+    #     ms = fill_bottom_hole(ms)
+    # if debug_mode: debug_show_mesh(ms, "6. After Occlusion Repair")
 
     # AUX: recovery
-    repair_mesh(ms)
+    # repair_mesh(ms)
 
     # 6) Close holes
-    ms.meshing_close_holes(
-        **refCfgs.params["meshing_close_holes"]
-    )
-    if debug_mode: debug_show_mesh(ms, "7. After Hole Closing")
+    # ms.meshing_close_holes(
+    #     **refCfgs.params["meshing_close_holes"]
+    # )
+    # if debug_mode: debug_show_mesh(ms, "7. After Hole Closing")
 
     # AUX: recovery
-    repair_mesh(ms)
+    # repair_mesh(ms)
 
     # 7) Restore vertex colors (attribute transfer)
-    ms.load_new_mesh(mesh_in_dir) # This is the source mesh (index 1)
-    ms.set_current_mesh(0) # Target mesh is the refined one
-
-    ms.transfer_attributes_per_vertex(
-        **refCfgs.params["transfer_attributes_per_vertex"]
-    )
-    if debug_mode: debug_show_mesh(ms, "8. After Attribute Restoration")
-
-    ms.set_current_mesh(1)
-    ms.delete_current_mesh()
-    ms.set_current_mesh(0)
+    # ms.load_new_mesh(mesh_in_dir) # This is the source mesh (index 1)
+    # ms.set_current_mesh(0) # Target mesh is the refined one
+    #
+    # ms.transfer_attributes_per_vertex(
+    #     **refCfgs.params["transfer_attributes_per_vertex"]
+    # )
+    # if debug_mode: debug_show_mesh(ms, "8. After Attribute Restoration")
+    #
+    # ms.set_current_mesh(1)
+    # ms.delete_current_mesh()
+    # ms.set_current_mesh(0)
 
     # --------------------------------------------------------------------------
     # Save the Refined Mesh

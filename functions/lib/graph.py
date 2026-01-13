@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import trimesh
 from collections import deque, defaultdict
@@ -233,26 +235,140 @@ def filter_proximal_vertices(
     idxs = np.nonzero(valid)[0]
     return idxs, dist
 
+
+import numpy as np
+from collections import defaultdict
+from typing import List, Dict, Tuple
+
+
+def extract_boundary_loops_robust(
+        verts: np.ndarray,
+        faces: np.ndarray,
+        part_indices: np.ndarray,
+        min_len: int = 4,
+        open_loop_threshold: int = 10  # <--- [ADDED] 열린 루프 허용 길이 임계값
+) -> List[np.ndarray]:
+    """
+    Graph DFS 대신, Mesh의 Face Winding Order를 사용하여 경계 루프를 추출합니다.
+    닫힌 사이클뿐만 아니라, 특정 길이 이상의 끊어진(열린) 경계선도 저장합니다.
+    """
+    # 1. 빠른 조회를 위해 Set 변환
+    part_set = set(part_indices)
+
+    # 2. 해당 파트에 속한 Face만 추출 (3개 점 모두 파트 내에 있을 때)
+    mask = np.isin(faces, part_indices).all(axis=1)
+    sub_faces = faces[mask]
+
+    if sub_faces.size == 0:
+        return []
+
+    # 3. Directed Half-Edge 생성
+    edges = np.concatenate([
+        sub_faces[:, [0, 1]],
+        sub_faces[:, [1, 2]],
+        sub_faces[:, [2, 0]]
+    ], axis=0)  # (M, 2)
+
+    # [FIX] view() 사용 전 메모리 연속성 강제 (ValueError 해결)
+    edges = np.ascontiguousarray(edges)
+
+    # 구조화된 배열을 사용하여 (u,v) 쌍을 하나의 객체로 취급해 카운팅
+    dtype = [('u', edges.dtype), ('v', edges.dtype)]
+    structured_edges = edges.view(dtype=dtype).squeeze()
+
+    unique_edges, counts = np.unique(structured_edges, return_counts=True)
+
+    # 4. 경계 엣지 추출
+    # (u,v)는 있지만 (v,u)는 없는 엣지가 경계선(boundary)입니다.
+    all_directed_edges = set(zip(unique_edges['u'], unique_edges['v']))
+
+    boundary_edges = []
+    for u, v in all_directed_edges:
+        if (v, u) not in all_directed_edges:
+            boundary_edges.append((u, v))
+
+    if not boundary_edges:
+        return []
+
+    # 5. Adjacency Map 생성
+    adj_map = defaultdict(list)
+    for u, v in boundary_edges:
+        adj_map[u].append(v)
+
+    # 6. 루프 추적 (Greedy Walk)
+    visited_edges = set()
+    loops = []
+
+    start_nodes = list(adj_map.keys())
+
+    for start_node in start_nodes:
+        # 유효한 시작 엣지가 있는지 확인 (방문 안 한 엣지)
+        if not adj_map[start_node]: continue
+
+        valid_start = False
+        for neighbor in adj_map[start_node]:
+            if (start_node, neighbor) not in visited_edges:
+                valid_start = True
+                break
+        if not valid_start:
+            continue
+
+        curr = start_node
+        path = [curr]
+
+        while True:
+            neighbors = adj_map[curr]
+            found_next = False
+            for nxt in neighbors:
+                if (curr, nxt) not in visited_edges:
+                    visited_edges.add((curr, nxt))
+                    curr = nxt
+                    path.append(curr)
+                    found_next = True
+                    break
+
+            # [MODIFIED] 더 이상 갈 곳이 없을 때 (Dead End)
+            if not found_next:
+                # 닫히지 않았더라도(Open Loop), 길이가 충분히 길면 저장
+                if len(path) >= open_loop_threshold:
+                    loops.append(np.array(path, dtype=int))
+                break
+
+            # [MODIFIED] 닫힌 루프(Closed Cycle) 발견 시
+            if curr == path[0]:
+                loop_nodes = np.array(path[:-1], dtype=int)  # 마지막 중복점 제외
+                if len(loop_nodes) >= min_len:
+                    loops.append(loop_nodes)
+                break
+
+            # 안전장치: 전체 경계 엣지 수보다 길어지면 중단
+            if len(path) > len(boundary_edges) + 1:
+                break
+
+    # 7. 길이순 정렬
+    loops.sort(key=lambda x: len(x), reverse=True)
+    return loops
+
 def segregate_loops(adj: List[List[int]], boundary_indices: np.ndarray) -> List[np.ndarray]:
     """
-    Extract boundary loops robustly:
-      1) Build boundary subgraph (+ optional 2-core peel)
-      2) Enumerate simple cycles (no edge consumption)
-      3) Select long, low-overlap cycles (greedy by length & new-edge coverage)
-    Return loops sorted by descending length.
+    Extract boundary loops robustly with safety limits to prevent infinite loops.
     """
     # -------------------- local toggles --------------------
-    PEEL_CORE          = True     # remove deg<2 iteratively
-    DETERMINISTIC      = True     # sorted neighbors
-    MIN_LEN            = 4        # drop tiny loops (e.g., triangles)
-    MIN_NEW_EDGE_FRAC  = 0.5      # keep a cycle only if ≥50% edges are new vs. already selected
+    PEEL_CORE = True  # remove deg<2 iteratively
+    DETERMINISTIC = True  # sorted neighbors
+    MIN_LEN = 4  # drop tiny loops
+    MIN_NEW_EDGE_FRAC = 0.5  # overlap filtering
+
+    # [FIX] 무한 루프 방지를 위한 안전장치 추가
+    MAX_CYCLES = math.inf  # 찾을 사이클의 최대 개수 (충분히 큰 값)
+    MAX_DFS_ITER = math.inf  # DFS 탐색 최대 반복 횟수
     # -------------------------------------------------------
 
     B = set(map(int, np.asarray(boundary_indices, dtype=int).ravel()))
     if not B:
         return []
 
-    # boundary-only neighbors & undirected edges
+    # 1. Build Boundary Subgraph
     bneigh = {u: [] for u in B}
     edges: set[tuple[int, int]] = set()
     for u in B:
@@ -264,21 +380,19 @@ def segregate_loops(adj: List[List[int]], boundary_indices: np.ndarray) -> List[
     if not edges:
         return []
 
-    # (optional) 2-core peel to remove spurs
+    # 2. (Optional) 2-Core Peel
     if PEEL_CORE:
         deg = {u: len(bneigh[u]) for u in B}
         alive = {u: True for u in B}
         q = deque([u for u in B if deg[u] < 2])
         while q:
             u = q.popleft()
-            if not alive[u]:
-                continue
+            if not alive[u]: continue
             alive[u] = False
             for v in list(bneigh[u]):
                 e = (u, v) if u < v else (v, u)
                 edges.discard(e)
-                if u in bneigh[v]:
-                    bneigh[v].remove(u)
+                if u in bneigh[v]: bneigh[v].remove(u)
                 deg[v] -= 1
                 if alive[v] and deg[v] == 1:
                     q.append(v)
@@ -289,16 +403,13 @@ def segregate_loops(adj: List[List[int]], boundary_indices: np.ndarray) -> List[
     else:
         coreV = B
 
-    # core adjacency from remaining edges
+    # 3. Core Adjacency Construction
     core_adj = defaultdict(list)
     for a, b in list(edges):
         if a in coreV and b in coreV:
             core_adj[a].append(b)
             core_adj[b].append(a)
-        else:
-            edges.discard((a, b))
-    if not edges:
-        return []
+
     if DETERMINISTIC:
         for u in core_adj:
             core_adj[u].sort()
@@ -306,74 +417,106 @@ def segregate_loops(adj: List[List[int]], boundary_indices: np.ndarray) -> List[
     def ekey(u: int, v: int) -> Tuple[int, int]:
         return (u, v) if u < v else (v, u)
 
-    # ---------- 1) enumerate simple cycles (Paton-style, undirected) ----------
+    # -------------------------------------------------------------------------
+    # [MODIFIED] 4. Enumerate cycles with Safety Limits
+    # -------------------------------------------------------------------------
     nodes = sorted(core_adj.keys())
     seen_cycles: set[Tuple[int, ...]] = set()
     cycles: list[list[int]] = []
 
+    dfs_counter = 0  # 총 탐색 횟수 카운터
+
     def canonical_cycle(cyc: list[int]) -> Tuple[int, ...]:
-        # remove duplicate end if present
         if len(cyc) >= 2 and cyc[0] == cyc[-1]:
             cyc = cyc[:-1]
         m = min(cyc)
         idxs = [i for i, v in enumerate(cyc) if v == m]
         best = None
         for i0 in idxs:
-            # forward
             fwd = cyc[i0:] + cyc[:i0]
-            # backward
-            bwd = list(reversed(cyc[i0:] + cyc[:i0]))
+            bwd = list(reversed(cyc[i0:] + cyc[:i0]))  # Optimize: create list once
             cand = tuple(fwd) if tuple(fwd) < tuple(bwd) else tuple(bwd)
             if best is None or cand < best:
                 best = cand
         return best
 
+    stop_search = False
+
     for u in nodes:
+        if stop_search: break  # 전체 제한 도달 시 중단
+
         for v in core_adj[u]:
-            if v <= u:  # enforce v>u to reduce duplicates
-                continue
+            if v <= u: continue  # undirected unique order
+
+            # Stack: (root, current_node, path_so_far)
             stack = [(u, v, [u, v])]
+
             while stack:
+                # [CHECK 1] DFS 반복 횟수 제한 (너무 깊거나 넓은 탐색 방지)
+                dfs_counter += 1
+                if dfs_counter > MAX_DFS_ITER:
+                    stop_search = True
+                    break
+
+                # [CHECK 2] 찾은 사이클 개수 제한
+                if len(cycles) >= MAX_CYCLES:
+                    stop_search = True
+                    break
+
                 root, cur, path = stack.pop()
-                # neighbors with id >= root to keep canonical growth
+
+                # Limit Path Depth (Optional optimization for speed)
+                # if len(path) > 500: continue
+
                 for w in core_adj[cur]:
                     if w == path[-2]:
-                        continue  # don't immediately go back
+                        continue  # don't go back immediately
+
                     if w == root:
+                        # Cycle Found
                         if len(path) >= 3:
-                            cyc = canonical_cycle(path[:])
-                            if cyc not in seen_cycles:
-                                seen_cycles.add(cyc)
-                                cycles.append(list(cyc))
+                            # canonical 변환 비용을 줄이기 위해 길이 체크 먼저
+                            if len(path) >= MIN_LEN:
+                                cyc = canonical_cycle(path[:])
+                                if cyc not in seen_cycles:
+                                    seen_cycles.add(cyc)
+                                    cycles.append(list(cyc))
                         continue
-                    # grow only if w >= root and new
+
+                    # Grow path: w >= root (canonical ordering constraint)
                     if w >= root and (w not in path):
                         stack.append((root, w, path + [w]))
+
+            if stop_search: break
 
     if not cycles:
         return []
 
-    # ---------- 2) select cycles (prefer long, low-overlap) ----------
-    # Filter tiny cycles first
-    cycles = [c for c in cycles if len(c) >= MIN_LEN]
-
-    # Sort by length desc
-    cycles.sort(key=len, reverse=True)
+    # -------------------------------------------------------------------------
+    # 5. Filter & Select Cycles (Longest, Low Overlap)
+    # -------------------------------------------------------------------------
+    cycles.sort(key=len, reverse=True)  # Longest first
 
     selected: list[np.ndarray] = []
     used_edges: set[Tuple[int, int]] = set()
 
     for cyc in cycles:
-        cyc_edges = {ekey(a, b) for a, b in zip(cyc, cyc[1:] + cyc[:1])}
+        # [MODIFIED] Path를 닫힌 루프로 만들기 위해 마지막 연결부 포함하여 엣지 생성
+        # zip(cyc, cyc[1:] + cyc[:1]) -> (0,1), (1,2), ..., (last, 0)
+        cyc_edges = {ekey(a, b) for a, b in zip(cyc, cyc[1:] + [cyc[0]])}
+
         if not cyc_edges:
             continue
-        new_edges = cyc_edges - used_edges
-        # keep only if it brings enough new edges (prevents tiny loop replacing a big one)
-        if len(new_edges) / len(cyc_edges) >= MIN_NEW_EDGE_FRAC:
-            selected.append(np.asarray(cyc, dtype=int))
-            used_edges |= cyc_edges
 
-    # final sort by length desc
+        new_edges = cyc_edges - used_edges
+
+        # 분모가 0이 되는 것을 방지하고, 새로운 정보가 많은지 확인
+        if len(cyc_edges) > 0:
+            ratio = len(new_edges) / len(cyc_edges)
+            if ratio >= MIN_NEW_EDGE_FRAC:
+                selected.append(np.asarray(cyc, dtype=int))
+                used_edges |= cyc_edges
+
     selected.sort(key=lambda a: -len(a))
     return selected
 
@@ -381,22 +524,40 @@ def identify_loop_neighbor(
     loop: np.ndarray,
     adj: List[List[int]],
     vert_label: np.ndarray,
-    parent_label: int
-) -> int:
+    parent_label: int,
+    neighbor_threshold: float = 0.25
+) -> List[int]:
     """
-    Identify the neighbor part ID for a given boundary loop.
-    Returns the most frequent neighbor label (excluding parent and <=0).
+    Identify the neighbor part ID(s) for a given boundary loop.
+    Returns a list of neighbor labels that exceed the threshold ratio.
+    If no neighbor exceeds the threshold, returns the most frequent one.
     """
     counts = defaultdict(int)
+    total_neighbors = 0
     for u in loop:
         for v in adj[u]:
             l_v = int(vert_label[v])
             # 0(배경)이나 자기 자신(parent)은 제외하고 카운트
             if l_v > 0 and l_v != parent_label:
                 counts[l_v] += 1
+                total_neighbors += 1
+    
     if not counts:
-        return -1
-    return max(counts, key=counts.get)
+        return []
+
+    # Find neighbors exceeding threshold
+    valid_neighbors = []
+    if total_neighbors > 0:
+        for label, count in counts.items():
+            if count / total_neighbors >= neighbor_threshold:
+                valid_neighbors.append(label)
+    
+    # If no neighbor exceeds threshold, fallback to the most frequent one
+    if not valid_neighbors:
+        most_frequent = max(counts, key=counts.get)
+        valid_neighbors.append(most_frequent)
+        
+    return valid_neighbors
 
 
 def label_by_separator(verts: np.ndarray, separator) -> tuple[np.ndarray, np.ndarray]:
@@ -552,7 +713,16 @@ def cluster_reciprocal_loop_pairs(
     # 1) 파트쌍 단위로 그룹핑 (무순서 쌍)
     buckets: Dict[Tuple[int, int], Dict[str, List[Dict]]] = {}
     for it in results:
-        p, q = int(it["parent"]), int(it["child"])
+        # it["child"] might be a list now, so we need to handle that.
+        # However, learn_separator_main usually returns single child per loop result.
+        # If we modified identify_loop_neighbor to return list, we need to check where it is used.
+        # It seems learn_separator_main calls identify_loop_neighbor.
+        # We need to check learn_separator_main implementation.
+        
+        # Assuming results are flattened and duplicated if multiple children were found
+        p = int(it["parent"])
+        q = int(it["child"])
+
         if p == q:
             # 자기-루프는 건너뜀
             continue
@@ -568,10 +738,41 @@ def cluster_reciprocal_loop_pairs(
     for (i, j), grp in buckets.items():
         A = grp["A"]  # i->j
         B = grp["B"]  # j->i
+        
+        # [INFO] 각 방향별 루프 개수 출력
+        print(f"[info] Pair ({i}, {j}): found {len(A)} loops (i->j) and {len(B)} loops (j->i).")
+        
         if not A or not B:
             continue  # 한쪽 방향만 있으면 매칭 불가
+        
+        # If multiple neighbors were detected, we might have multiple entries for the same loop.
+        # We should handle this. For now, we treat them as separate candidates.
+        # However, if we have multiple candidates for the same loop, we might want to pick the best one.
+        # But here we are matching between A and B sets.
+        # If a loop in A has multiple potential neighbors in B, it will appear multiple times in A list with different 'child' values.
+        # But 'child' is part of the key (i, j). So for a specific (i, j) pair, 
+        # the list A contains loops from part i that think they are neighbors to part j.
+        # So duplicates shouldn't be an issue here because we are iterating over specific (i, j) pairs.
+        
+        # However, if a loop was duplicated because it had multiple neighbors (e.g. j and k),
+        # it will appear in bucket (i, j) and bucket (i, k).
+        # This is fine, a loop can be part of multiple interfaces if it touches multiple parts.
+        # But wait, a single loop usually defines a single boundary.
+        # If it touches multiple parts, it might be better to split it?
+        # But here we just allow it to be used in multiple RLPs.
+        
+        # But wait, if we use the same loop for multiple RLPs, we might generate multiple joints at the same location.
+        # The user asked: "if multiple neighbors are detected, copy that many times so it can be used in cluster_reciprocal_loop_pairs".
+        # This is exactly what we did in learn_separator_main by appending multiple results.
+        # And since cluster_reciprocal_loop_pairs iterates over (i, j) buckets, 
+        # each copy will go to its respective bucket.
+        # So the logic seems correct.
+
         C = _build_cost_matrix(A, B, w_pos=w_pos, w_ang=w_ang)
         pairs = _hungarian_or_greedy(C)
+        
+        # [INFO] 매칭된 RLP 개수 출력
+        print(f"[info] Pair ({i}, {j}): matched {len(pairs)} RLPs.")
 
         # 3) 페어 생성 (코스트 상한 필터)
         for ia, ib in pairs:

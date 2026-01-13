@@ -19,7 +19,7 @@ class SystemConfigs():
 
     # Operational controller
     enable_stage_align: bool = False
-    restore_align: bool = True
+    restore_align: bool = False
     enable_stage_refine: bool = False
     enable_stage_decompose: bool = False
     enable_stage_segment: bool = True
