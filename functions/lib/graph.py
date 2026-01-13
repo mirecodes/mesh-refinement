@@ -240,48 +240,47 @@ import numpy as np
 from collections import defaultdict
 from typing import List, Dict, Tuple
 
+import numpy as np
+from collections import defaultdict
+from typing import List, Tuple, Set
+
 
 def extract_boundary_loops_robust(
         verts: np.ndarray,
         faces: np.ndarray,
         part_indices: np.ndarray,
         min_len: int = 4,
-        open_loop_threshold: int = 10  # <--- [ADDED] 열린 루프 허용 길이 임계값
+        open_loop_threshold: int = 10,
+        min_new_edge_frac: float = 0.25  # <--- [ADDED] 겹침 비율 임계값
 ) -> List[np.ndarray]:
     """
-    Graph DFS 대신, Mesh의 Face Winding Order를 사용하여 경계 루프를 추출합니다.
-    닫힌 사이클뿐만 아니라, 특정 길이 이상의 끊어진(열린) 경계선도 저장합니다.
+    Mesh의 Face Winding Order를 사용하여 경계 루프를 추출하고,
+    '정보량(새로운 엣지 비율)'을 기준으로 유효한 루프만 선별합니다.
     """
-    # 1. 빠른 조회를 위해 Set 변환
-    part_set = set(part_indices)
-
-    # 2. 해당 파트에 속한 Face만 추출 (3개 점 모두 파트 내에 있을 때)
+    # ---------------------------------------------------------
+    # 1. Prepare Boundary Edges (Directed)
+    # ---------------------------------------------------------
     mask = np.isin(faces, part_indices).all(axis=1)
     sub_faces = faces[mask]
 
     if sub_faces.size == 0:
         return []
 
-    # 3. Directed Half-Edge 생성
     edges = np.concatenate([
         sub_faces[:, [0, 1]],
         sub_faces[:, [1, 2]],
         sub_faces[:, [2, 0]]
-    ], axis=0)  # (M, 2)
+    ], axis=0)
 
-    # [FIX] view() 사용 전 메모리 연속성 강제 (ValueError 해결)
+    # [IMPORTANT] Memory layout fix for view()
     edges = np.ascontiguousarray(edges)
 
-    # 구조화된 배열을 사용하여 (u,v) 쌍을 하나의 객체로 취급해 카운팅
     dtype = [('u', edges.dtype), ('v', edges.dtype)]
     structured_edges = edges.view(dtype=dtype).squeeze()
-
     unique_edges, counts = np.unique(structured_edges, return_counts=True)
 
-    # 4. 경계 엣지 추출
-    # (u,v)는 있지만 (v,u)는 없는 엣지가 경계선(boundary)입니다.
+    # (u, v) exists but (v, u) does not => Boundary Edge
     all_directed_edges = set(zip(unique_edges['u'], unique_edges['v']))
-
     boundary_edges = []
     for u, v in all_directed_edges:
         if (v, u) not in all_directed_edges:
@@ -290,24 +289,27 @@ def extract_boundary_loops_robust(
     if not boundary_edges:
         return []
 
-    # 5. Adjacency Map 생성
     adj_map = defaultdict(list)
     for u, v in boundary_edges:
         adj_map[u].append(v)
 
-    # 6. 루프 추적 (Greedy Walk)
-    visited_edges = set()
-    loops = []
+    # ---------------------------------------------------------
+    # 2. Walk Paths (Collect Candidates)
+    # ---------------------------------------------------------
+    visited_edges_during_walk = set()
+    candidates: List[Tuple[np.ndarray, bool]] = []  # (path, is_closed)
 
     start_nodes = list(adj_map.keys())
 
     for start_node in start_nodes:
-        # 유효한 시작 엣지가 있는지 확인 (방문 안 한 엣지)
+        # Check validity
         if not adj_map[start_node]: continue
 
+        # 이미 방문한 엣지에서 시작하는 경우 스킵 (탐색 중복 방지)
+        # 단, 완벽한 중복 방지는 아래 Filtering 단계에서 수행하므로 여기선 느슨하게 체크
         valid_start = False
         for neighbor in adj_map[start_node]:
-            if (start_node, neighbor) not in visited_edges:
+            if (start_node, neighbor) not in visited_edges_during_walk:
                 valid_start = True
                 break
         if not valid_start:
@@ -320,34 +322,73 @@ def extract_boundary_loops_robust(
             neighbors = adj_map[curr]
             found_next = False
             for nxt in neighbors:
-                if (curr, nxt) not in visited_edges:
-                    visited_edges.add((curr, nxt))
+                if (curr, nxt) not in visited_edges_during_walk:
+                    visited_edges_during_walk.add((curr, nxt))
                     curr = nxt
                     path.append(curr)
                     found_next = True
                     break
 
-            # [MODIFIED] 더 이상 갈 곳이 없을 때 (Dead End)
+            # Case A: Dead End (Open Loop)
             if not found_next:
-                # 닫히지 않았더라도(Open Loop), 길이가 충분히 길면 저장
                 if len(path) >= open_loop_threshold:
-                    loops.append(np.array(path, dtype=int))
+                    candidates.append((np.array(path, dtype=int), False))
                 break
 
-            # [MODIFIED] 닫힌 루프(Closed Cycle) 발견 시
+            # Case B: Cycle Detected (Closed Loop)
             if curr == path[0]:
-                loop_nodes = np.array(path[:-1], dtype=int)  # 마지막 중복점 제외
+                loop_nodes = np.array(path[:-1], dtype=int)
                 if len(loop_nodes) >= min_len:
-                    loops.append(loop_nodes)
+                    candidates.append((loop_nodes, True))
                 break
 
-            # 안전장치: 전체 경계 엣지 수보다 길어지면 중단
+            # Safety brake
             if len(path) > len(boundary_edges) + 1:
                 break
 
-    # 7. 길이순 정렬
-    loops.sort(key=lambda x: len(x), reverse=True)
-    return loops
+    # ---------------------------------------------------------
+    # 3. Filter Candidates (Selection Logic like segregate_loops)
+    # ---------------------------------------------------------
+    # Sort by length descending (긴 루프 우선)
+    candidates.sort(key=lambda x: len(x[0]), reverse=True)
+
+    selected_loops: List[np.ndarray] = []
+    globally_used_edges: Set[Tuple[int, int]] = set()
+
+    def get_edge_key(u: int, v: int) -> Tuple[int, int]:
+        """Undirected edge key for overlap check"""
+        return (u, v) if u < v else (v, u)
+
+    for path, is_closed in candidates:
+        # Build edges for this path
+        current_edges = set()
+
+        if is_closed:
+            # 닫힌 루프: (0,1), (1,2), ..., (last, 0)
+            for i in range(len(path)):
+                u, v = path[i], path[(i + 1) % len(path)]
+                current_edges.add(get_edge_key(u, v))
+        else:
+            # 열린 루프: (0,1), (1,2), ..., (n-2, n-1)
+            for i in range(len(path) - 1):
+                u, v = path[i], path[i + 1]
+                current_edges.add(get_edge_key(u, v))
+
+        if not current_edges:
+            continue
+
+        # Check Overlap
+        new_edges = current_edges - globally_used_edges
+
+        # [CHECK] 새로운 정보의 비율 확인
+        ratio = len(new_edges) / len(current_edges)
+
+        if ratio >= min_new_edge_frac:
+            selected_loops.append(path)
+            globally_used_edges.update(current_edges)
+
+    return selected_loops
+
 
 def segregate_loops(adj: List[List[int]], boundary_indices: np.ndarray) -> List[np.ndarray]:
     """

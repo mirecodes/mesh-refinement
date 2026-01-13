@@ -249,11 +249,11 @@ def learn_separator_main(
 
     # (4) Get boundaries
     print(f"[info] Finding boundary loops for part {idx_part}...")
-    boundary_indices = filter_boundary_vertices(adj, vert_label, idx_part)
-    loops = segregate_loops(adj, boundary_indices)
+    # boundary_indices = filter_boundary_vertices(adj, vert_label, idx_part)
+    # loops = segregate_loops(adj, boundary_indices)
     
     # Use extract_boundary_loops_robust instead of segregate_loops
-    # loops = extract_boundary_loops_robust(verts, faces, idx_seeds)
+    loops = extract_boundary_loops_robust(verts, faces, idx_seeds)
 
     print(f"[info] Found {len(loops)} loops for part {idx_part}.")
 
@@ -396,7 +396,8 @@ def learn_separator_main(
                         planes=result_data["plane"],
                         center=center,
                         title=f"Loop {order}, Method: {method_name}",
-                        display=visualize_results
+                        display=visualize_results,
+                        loop_indices=loop_idx # Pass loop indices for visualization
                     )
 
         # Duplicate result for each identified neighbor

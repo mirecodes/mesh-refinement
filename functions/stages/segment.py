@@ -241,6 +241,20 @@ def stage_segment(cfgs):
     categories, belongings, rand_colors = select_parts_interactive(parts, verts, faces, categories_num, display=cfgs.debug_mode)
     print("[info] Part selection finished.")
     
+    # --- Compact categories by removing empty ones (keeping index 0) ---
+    if len(categories) > 1:
+        new_categories = [categories[0]]
+        for c in categories[1:]:
+            if c:
+                new_categories.append(c)
+        
+        if len(new_categories) != len(categories):
+            print(f"[info] Removed {len(categories) - len(new_categories)} empty categories.")
+            categories = new_categories
+            categories_num = len(categories) - 1
+            print(f"[info] Updated categories_num: {categories_num}")
+    # -------------------------------------------------------------------
+
     # Manually fill categories if UI skipped (not handled here fully, assumed user wants UI if debug_mode is True)
     # If debug_mode is false, select_parts_interactive returns empty categories. 
     # This might break things if not handled. 

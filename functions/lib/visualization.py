@@ -473,7 +473,8 @@ def visualize_k_hop_plane(
     planes: list, # list of (n, d)
     center: np.ndarray,
     title: str = "k-hop neighbors and plane",
-    display: bool = True
+    display: bool = True,
+    loop_indices: np.ndarray | None = None, # Added parameter
 ):
     """
     Visualize k-hop neighbors and the estimated plane.
@@ -487,22 +488,27 @@ def visualize_k_hop_plane(
     mesh = vedo.Mesh([verts, faces]).c("lightgray").alpha(0.2)
     actors.append(mesh)
 
-    # 2) Positive and negative neighbor vertices
+    # 2) Positive and negative neighbor vertices (more transparent)
     if idx_pos.size > 0:
-        pos_pts = vedo.Spheres(verts[idx_pos], r=0.005, c="lightblue", res=8).alpha(0.6)
+        pos_pts = vedo.Spheres(verts[idx_pos], r=0.0025, c="lightblue", res=8).alpha(0.3) # Reduced size
         actors.append(pos_pts)
     if idx_neg.size > 0:
-        neg_pts = vedo.Spheres(verts[idx_neg], r=0.005, c="salmon", res=8).alpha(0.6)
+        neg_pts = vedo.Spheres(verts[idx_neg], r=0.0025, c="salmon", res=8).alpha(0.3) # Reduced size
         actors.append(neg_pts)
+        
+    # 3) Boundary loop points (stronger)
+    if loop_indices is not None and loop_indices.size > 0:
+        loop_pts = vedo.Spheres(verts[loop_indices], r=0.006, c="red", res=8).alpha(1.0) # Reduced size but larger than neighbors
+        actors.append(loop_pts)
 
-    # 3) Estimated plane(s)
+    # 4) Estimated plane(s)
     plane_colors = ["green", "cyan", "magenta", "yellow"]
     for i, (n, d) in enumerate(planes):
         plane_pos = center - (np.dot(center, n) + d) * n
-        plane_actor = vedo.Plane(pos=plane_pos, normal=n, s=(1.0, 1.0)).c(plane_colors[i % len(plane_colors)]).alpha(0.5)
+        plane_actor = vedo.Plane(pos=plane_pos, normal=n, s=(1.0, 1.0)).c(plane_colors[i % len(plane_colors)]).alpha(0.2) # Increased transparency
         actors.append(plane_actor)
 
-    # 4) Show plot
+    # 5) Show plot
     plt = vedo.Plotter(bg="white", title=title)
     _axes_target = mesh
     try:
