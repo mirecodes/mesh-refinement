@@ -588,7 +588,6 @@ def cluster_reciprocal_loop_pairs(
             for ia, ib in matched_indices:
                 pairs_to_process.append((A[ia], B[ib], float(C[ia, ib])))
             
-        #TODO: remove one sided matching
         elif A and not B:
             if verbose:
                 print(f"[info]     One-sided (A only): Creating {len(A)} virtual B loops.")

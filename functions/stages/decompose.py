@@ -36,7 +36,7 @@ class CoACDParams:
     # Extrude neighboring convex hulls along overlapping faces. Default False.
     extrude: bool = False
     # Extrude margin if extrude is True. Default 0.01.
-    extrude_margin: float = 0.01
+    extrude_margin: float = 0.015
     # Approximation shape ("ch" for convex hulls, "box" for cubes). Default "ch".
     approximate_mode: str = 'ch'
     # Random seed. Default 0 (or random).

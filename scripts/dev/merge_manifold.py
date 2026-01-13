@@ -74,13 +74,14 @@ def merge_urdf_manifold_ply(urdf_path, joint_cfg, output_path="fused_mesh.ply"):
 
 
 if __name__ == "__main__":
-    my_urdf = "faucet/mobility.urdf"
+    my_urdf = "urdf/toilet/mobility.urdf"
 
     # 테스트용 설정 (필요시 값 조절)
     my_config = {
         'joint_0': 0.0,
-        'joint_1': 0.0,
-        'joint_2': 0.0,
+        'joint_1': np.pi / 3,
+        'joint_2': np.pi / 6,
+        'joint_3': 0.0,
     }
 
     if os.path.exists(my_urdf):

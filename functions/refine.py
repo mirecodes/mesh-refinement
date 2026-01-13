@@ -60,19 +60,19 @@ class RefinementConfig:
     params: dict = field(default_factory=lambda: {
         # 1) cleaning / components
         "meshing_remove_connected_component_by_diameter": {
-            "mincomponentdiag": PercentageValue(20.0),
+            "mincomponentdiag": PercentageValue(40.0),
         },
         # 2) reconstruction
         "generate_surface_reconstruction_screened_poisson": {
-            "depth": 10,
-            "fulldepth": 8,
+            "depth": 8, # defualt = 10,
+            "fulldepth": 6, # default = 8,
             # 'cgdepth': 0,
             # 'scale': 1.1,
             # 'samplespernode': 1.5,
             # 'pointweight': 4,
             # 'iters': 8,
             # 'confidence': False,
-            # 'preclean': True,
+            'preclean': True,
             # 'threads': 16,
         },
         # 3) vertex selection (cut)
@@ -144,6 +144,10 @@ def stage_refine(cfgs, debug_mode: bool = False):
     if debug_mode: debug_show_mesh(ms, "2. After Poisson Reconstruction")
 
     # 3) Vertex selection (cut-off)
+    ms.meshing_remove_connected_component_by_diameter(
+        **refCfgs.params["meshing_remove_connected_component_by_diameter"]
+    )
+
     ms.compute_selection_by_condition_per_vertex(
         **refCfgs.params["compute_selection_by_condition_per_vertex"]
     )

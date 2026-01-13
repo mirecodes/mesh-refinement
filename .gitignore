@@ -12,3 +12,5 @@ out/
 # Python
 __pycache__/
 *.pyc
+
+scripts/dev/urdf/
