@@ -244,6 +244,114 @@ import numpy as np
 from collections import defaultdict
 from typing import List, Tuple, Set
 
+import numpy as np
+from typing import List, Set
+
+
+def merge_loops_by_topology(
+        adj: List[List[int]],
+        loops: List[np.ndarray],
+        max_hops: int = 2,
+        min_size_to_keep: int = 10  # 병합되지 못한 루프 중 너무 작은 것은 버림
+) -> List[np.ndarray]:
+    """
+    여러 개의 루프(점들의 리스트)를 입력받아,
+    그래프 상(Edge Hop)에서 가까운 루프끼리 하나로 '병합'합니다.
+
+    Args:
+        adj: 전체 메쉬의 Adjacency list
+        loops: extract_boundary_loops_robust 결과물 (List[np.array])
+        max_hops: 몇 칸 이내면 같은 덩어리로 볼 것인가 (보통 2~3)
+        min_size_to_keep: 병합 후에도 독립적으로 남은 루프가 이보다 작으면 노이즈로 간주하고 삭제
+
+    Returns:
+        List[np.ndarray]: 병합된 루프 점들의 리스트.
+                          (주의: 병합된 루프는 더 이상 순차적인 경로(Path)가 아니라 점들의 집합(Cloud)이 됩니다.
+                           하지만 PCA/SVM 학습에는 순서가 상관없으므로 문제없습니다.)
+    """
+    if not loops:
+        return []
+
+    num_loops = len(loops)
+
+    # 1. 각 루프의 '영향권(Frontier)' 미리 계산 (Set 변환)
+    #    매번 BFS를 돌면 느리므로, Set 연산으로 처리
+    loop_sets = [set(l) for l in loops]
+    expanded_sets = []
+
+    for l_idx, current_set in enumerate(loop_sets):
+        # 0-hop (자기 자신)
+        frontier = current_set.copy()
+
+        # Expand k-hops
+        current_layer = current_set
+        for _ in range(max_hops):
+            next_layer = set()
+            for u in current_layer:
+                # adj[u]의 이웃들을 추가
+                for v in adj[u]:
+                    if v not in frontier:
+                        frontier.add(v)
+                        next_layer.add(v)
+            if not next_layer: break
+            current_layer = next_layer
+
+        expanded_sets.append(frontier)
+
+    # 2. 루프 간 인접 행렬 생성 (Meta-Graph)
+    #    loop_adjacency[i][j] = True if loop i is close to loop j
+    meta_adj = [[] for _ in range(num_loops)]
+
+    for i in range(num_loops):
+        for j in range(i + 1, num_loops):
+            # i의 확장 영역이 j와 겹치거나, j의 확장 영역이 i와 겹치면 연결
+            # (교집합이 있는지 확인)
+            if not loop_sets[j].isdisjoint(expanded_sets[i]) or \
+                    not loop_sets[i].isdisjoint(expanded_sets[j]):
+                meta_adj[i].append(j)
+                meta_adj[j].append(i)
+
+    # 3. 연결된 컴포넌트 찾기 (Connected Components)
+    visited = [False] * num_loops
+    merged_results = []
+
+    for i in range(num_loops):
+        if visited[i]:
+            continue
+
+        # BFS/DFS로 연결된 루프 그룹 찾기
+        component_indices = []
+        stack = [i]
+        visited[i] = True
+
+        while stack:
+            curr = stack.pop()
+            component_indices.append(curr)
+            for neighbor in meta_adj[curr]:
+                if not visited[neighbor]:
+                    visited[neighbor] = True
+                    stack.append(neighbor)
+
+        # 4. 그룹 내 병합 (Merge Vertices)
+        #    여러 루프의 점들을 하나로 합침
+        if len(component_indices) == 1:
+            # 병합할 것 없음
+            final_loop = loops[component_indices[0]]
+        else:
+            # 여러 개 병합
+            arrays_to_merge = [loops[idx] for idx in component_indices]
+            final_loop = np.concatenate(arrays_to_merge)
+            # 중복 제거 (혹시 겹친다면)
+            final_loop = np.unique(final_loop)
+
+        # 5. 크기 필터링 (너무 작은 노이즈 덩어리는 제외)
+        if len(final_loop) >= min_size_to_keep:
+            merged_results.append(final_loop)
+
+    # 크기순 정렬 (메인 루프가 먼저 오도록)
+    merged_results.sort(key=len, reverse=True)
+
+    return merged_results
 
 def extract_boundary_loops_robust(
         verts: np.ndarray,

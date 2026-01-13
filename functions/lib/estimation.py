@@ -7,7 +7,7 @@ from sklearn.svm import LinearSVC, SVC
 
 from functions.lib.graph import (
     build_adjacency_graph, filter_boundary_vertices, segregate_loops, 
-    filter_proximal_vertices, identify_loop_neighbor, extract_boundary_loops_robust
+    filter_proximal_vertices, identify_loop_neighbor, merge_loops_by_topology, extract_boundary_loops_robust
 )
 from functions.lib.visualization import visualize_k_hop_plane
 
@@ -254,6 +254,17 @@ def learn_separator_main(
     
     # Use extract_boundary_loops_robust instead of segregate_loops
     loops = extract_boundary_loops_robust(verts, faces, idx_seeds)
+    print(f"[debug] Raw loops: {len(loops)}")
+
+    # 2. [NEW] Topology 기반 병합 및 필터링
+    #    - 서로 2칸(hop) 이내에 있는 루프들은 "같은 경계"로 보고 합칩니다.
+    #    - 합쳐진 결과가 15개 점 미만이면 노이즈로 보고 버립니다.
+    loops = merge_loops_by_topology(
+        adj,
+        loops,
+        max_hops=2,  # 거리가 2 hop 이내면 병합
+        min_size_to_keep=15  # 병합 후에도 너무 작으면 삭제
+    )
 
     print(f"[info] Found {len(loops)} loops for part {idx_part}.")
 
