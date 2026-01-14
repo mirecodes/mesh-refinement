@@ -54,66 +54,49 @@ def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", vo
 
     try:
         # Voxelization with filling
+        # voxelized()는 메쉬의 Bounding Box를 기준으로 로컬 그리드를 생성합니다.
+        # 따라서 그리드의 원점은 (0,0,0)이 아니라 mesh.bounds[0] 근처가 됩니다.
         voxel_grid = combined_raw.voxelized(pitch=voxel_pitch)
         voxel_grid.fill() 
         
         # Marching Cubes로 메쉬 재구성
         final_mesh = voxel_grid.marching_cubes
 
-        # [Fix] 스케일 및 위치 보정
-        # trimesh 버전에 따라 marching_cubes가 복셀 인덱스 좌표(정수)를 반환할 수도 있고,
-        # 이미 변환된 좌표를 반환할 수도 있음.
-        # 사용자가 "200배 작아졌다"고 한다면, 현재 final_mesh가 너무 작은 상태.
-        # 즉, 이미 pitch가 적용되었거나, 혹은 단위가 m인데 cm로 해석되어야 하는 상황일 수 있음.
+        # [Fix] 좌표계 복원 (Origin & Scale)
+        # voxel_grid.transform은 (Index 좌표 -> World 좌표) 변환 행렬입니다.
+        # 여기에는 Scale(pitch)과 Translation(origin)이 모두 포함되어 있습니다.
+        matrix = voxel_grid.transform
+        grid_origin = matrix[:3, 3]
+        print(f"[Debug] Voxel Grid Origin (Translation): {grid_origin}")
         
-        # 확인을 위해 현재 final_mesh의 스케일을 체크
-        final_bounds = final_mesh.bounds
-        final_size = final_bounds[1] - final_bounds[0]
+        # 현재 메쉬의 스케일 상태 확인
+        current_size = final_mesh.extents
         raw_size = raw_bounds[1] - raw_bounds[0]
-        
-        # 스케일 비율 계산 (Voxel / Raw)
-        scale_ratio = np.mean(final_size / (raw_size + 1e-9))
-        print(f"[Debug] Initial Voxel Mesh Size: {final_size}")
-        print(f"[Debug] Scale Ratio (Voxel/Raw): {scale_ratio:.4f}")
-        
-        # 만약 스케일이 너무 작다면 (예: 0.005배), pitch의 역수를 곱해야 할 수도 있음.
-        # 하지만 보통 marching_cubes 결과가 정수라면 pitch를 곱해야 함.
-        # 사용자가 "200배 작아졌다"고 했으므로, 현재 상태가 1/200 = 0.005 배인 상태일 수 있음.
-        # 이는 pitch(0.005)가 두 번 곱해졌거나, 혹은 단위 문제일 수 있음.
-        
-        # 안전한 복원 방법: 비율 기반 보정
-        if scale_ratio < 0.1: # 너무 작으면
-            print(f"[Info] 스케일이 너무 작습니다. 비율({1/scale_ratio:.2f})만큼 확대합니다.")
-            final_mesh.apply_scale(1.0 / scale_ratio)
-            
-            # 위치 보정 (중심점 맞추기)
-            # 스케일만 키우면 원점 기준으로 커지므로 중심이 틀어질 수 있음.
-            # 원본 중심점으로 이동
-            current_center = final_mesh.centroid
-            translation = raw_center - current_center
-            print(f"[Info] 위치 보정을 위해 이동합니다: {translation}")
-            final_mesh.apply_translation(translation)
-            
-        elif scale_ratio > 10.0: # 너무 크면 (이전 문제)
-            print(f"[Info] 스케일이 너무 큽니다. 비율({1/scale_ratio:.2f})만큼 축소합니다.")
-            final_mesh.apply_scale(1.0 * voxel_pitch)
-            
-            # 위치 보정
-            # current_center = final_mesh.centroid
-            # translation = raw_center - current_center
-            # print(f"[Info] 위치 보정을 위해 이동합니다: {translation}")
-            # final_mesh.apply_translation(translation)
+        ratio = np.mean(current_size / (raw_size + 1e-9))
+        print(f"[Debug] Mesh/Raw Size Ratio: {ratio:.2f}")
 
-        # 보정 후 다시 확인
-        final_bounds_fixed = final_mesh.bounds
+        if ratio > 10.0:
+            # marching_cubes 결과가 Index 좌표계(정수)인 경우
+            # Transform 행렬을 전체 적용하여 Scale과 Origin을 모두 복원합니다.
+            print("[Info] Index 좌표계로 감지됨 -> Transform 행렬 전체 적용")
+            final_mesh.apply_transform(matrix)
+        else:
+            # marching_cubes 결과가 이미 Scale은 적용되었으나(미터 단위),
+            # 위치가 Local(0,0,0 기준)인 경우입니다.
+            # 이 경우 Grid의 Origin 만큼 이동시켜주면 됩니다.
+            
+            # 현재 위치가 원본과 얼마나 차이나는지 확인
+            dist = np.linalg.norm(final_mesh.centroid - raw_center)
+            if dist > voxel_pitch:
+                print(f"[Info] 위치 보정을 위해 Grid Origin({grid_origin}) 만큼 이동합니다.")
+                final_mesh.apply_translation(grid_origin)
+            else:
+                print("[Info] 위치가 이미 원본과 일치합니다.")
+
+        # 보정 후 최종 확인
         final_center_fixed = final_mesh.centroid
-        print(f"[Debug] Fixed Mesh Bounds: {final_bounds_fixed}")
         print(f"[Debug] Fixed Mesh Center: {final_center_fixed}")
         
-        # 중심점 차이 확인
-        # center_diff = np.linalg.norm(final_center_fixed - raw_center)
-        # print(f"[Debug] Center Difference: {center_diff:.6f}")
-
         # 표면 부드럽게 만들기 (Laplacian Smoothing)
         trimesh.smoothing.filter_laplacian(final_mesh, iterations=2)
 
@@ -126,10 +109,6 @@ def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", vo
             print(f"[Warning] 결과 메쉬가 Watertight하지 않습니다. (V={len(final_mesh.vertices)}, F={len(final_mesh.faces)})")
 
         # PLY로 내보내기
-        # PLY 헤더에 단위를 명시하는 표준 방법은 없지만, 주석(comment)으로 남길 수는 있음.
-        # 하지만 대부분의 뷰어는 이를 무시함.
-        # 대신 obj_info 등을 활용할 수 있으나 trimesh export에서 지원하는지 확인 필요.
-        # 여기서는 단순히 바이너리로 저장.
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         final_mesh.export(output_path, file_type='ply', encoding='binary')
         print(f"[Info] 저장 완료: {output_path}")

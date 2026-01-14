@@ -10,7 +10,7 @@ from json_handler import JsonHandler
 @dataclass
 class CoACDParams:
     # Concavity threshold (0.01~1). Lower = more details/parts. Default 0.05.
-    threshold: float = 0.02
+    threshold: float = 0.025
     # Max # convex hulls. -1 = unlimited. Default -1.
     max_convex_hull: int = -1
     # Manifold preprocessing mode ('auto', 'on', 'off'). Default 'auto'.

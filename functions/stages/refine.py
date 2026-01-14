@@ -20,8 +20,8 @@ class RefinementConfig:
         "cleaning": False, # step-1
         "reconstruction": False, # step-2
         "vertex_selection": False, # step-3
-        "decimation": False, # step-4
-        "remeshing": False, # step-5
+        "decimation": True, # step-4
+        "remeshing": True, # step-5
         "occlusion_repair": False, # step-6
         "close_holes": False, # step-7
         "attribute_transfer": False, # step-8
