@@ -14,7 +14,7 @@ from plyfile import PlyData, PlyElement
 @dataclass
 class BindCfgs:
     k_neighbors: int = 3            # fixed: use k=3
-    max_dist_rel: float = 0.10      # exclude if nearest vertex farther than this * mesh diagonal
+    max_dist_rel: float = 0.20      # exclude if nearest vertex farther than this * mesh diagonal
     z_cut_rel: float = -1000.0        # exclude if Gaussian z < (z_cut_rel * mesh diagonal)
     verbose: bool = True
 
@@ -136,10 +136,20 @@ def stage_bind(cfgs):
     
     mesh_path = states.refine.dirs.mesh
     print(f"[Info] Loading mesh from: {mesh_path}")
-    mesh = trimesh.load(mesh_path)
+    
+    # [Fix] process=False is crucial!
+    # Trimesh defaults to process=True, which merges vertices and changes indices.
+    # This causes mismatch with vert_labels which are based on the original file indices.
+    mesh = trimesh.load(mesh_path, process=False)
     
     vert_labels = states.segment.vert_label
     print(f"[Info] Loaded vertex labels: {len(vert_labels)} labels")
+
+    # [Check] Validate counts
+    if len(mesh.vertices) != len(vert_labels):
+        print(f"[Error] Vertex count mismatch! Mesh: {len(mesh.vertices)}, Labels: {len(vert_labels)}")
+        print("[Error] This will cause incorrect binding. Please check if the mesh file matches the labels.")
+        # We proceed, but the result will likely be wrong.
 
     gaussian_path = states.transform.dirs.gaussian
     print(f"[Info] Reading Gaussian from: {gaussian_path}")

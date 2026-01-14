@@ -52,8 +52,8 @@ vault:
   urdf_path: "../urdf/vault/mobility.urdf"
   output_dir: "../merged"
   joint_config:
-    joint_1: 1.047
-    joint_2: 0.0
+    joint_0: 0.785
+    joint_1: 0.0
 
 # 7. Fridge
 fridge:
