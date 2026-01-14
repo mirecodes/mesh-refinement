@@ -1,7 +1,7 @@
 {
-  "object_name": "toilet",
+  "object_name": "lamp",
   "extension": "ply",
   "parts": {
-    "num": 5
+    "num": 4
   }
 }
