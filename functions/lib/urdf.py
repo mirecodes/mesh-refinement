@@ -327,7 +327,19 @@ def generate_urdf(
         transform_matrix: np.ndarray = None,
 ):
     os.makedirs(out_dir, exist_ok=True)
-    mesh_paths = export_meshes(closed_parts, os.path.join(out_dir, "meshes"), fmt=mesh_fmt)
+    
+    # [Fix] Apply transform to meshes if needed before exporting
+    if transform_matrix is not None:
+        print("[Info] Applying transform to meshes for URDF export...")
+        meshes_to_export = {}
+        for lid, mesh in closed_parts.items():
+            m = mesh.copy()
+            m.apply_transform(transform_matrix)
+            meshes_to_export[lid] = m
+    else:
+        meshes_to_export = closed_parts
+        
+    mesh_paths = export_meshes(meshes_to_export, os.path.join(out_dir, "meshes"), fmt=mesh_fmt)
 
     # ==========================================
     # 1. 트리 구조 재구성 (Tree Logic Applied Here)
@@ -367,12 +379,9 @@ def generate_urdf(
     # Regular Links
     for lid in link_ids:
         link = ET.SubElement(robot, "link", name=f"link_{lid}")
-        mesh = closed_parts[lid]
-
-        # Mass Calc (Apply transform temporarily)
-        mesh_for_calc = mesh.copy()
-        if transform_matrix is not None:
-            mesh_for_calc.apply_transform(transform_matrix)
+        
+        # Use the transformed mesh for mass calculation as well
+        mesh_for_calc = meshes_to_export[lid]
         mass, com_world, I_com = compute_mass_inertia_at_com(mesh_for_calc, density=density)
 
         link_o_world = link_frame_origin.get(lid, np.zeros(3))
