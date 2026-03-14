@@ -2,86 +2,130 @@
 
 # Configurations for different objects
 
-# 1. Toilet
-toilet:
-  urdf_path: "../urdf/toilet/mobility.urdf"
-  output_dir: "../merged"
-  joint_config:
-    joint_0: 0.0
-    joint_1: 1.0472  # pi / 3
-    joint_2: 0.5236  # pi / 6
-    joint_3: 0.0
+# Category 1: Simple Objects
 
-# 2. Faucet
-faucet:
-  urdf_path: "../urdf/faucet/mobility.urdf"
-  output_dir: "../merged"
-  joint_config:
-    joint_0: 0.0
-    joint_1: 0.0
-    joint_2: 0.0
-
-# 3. Kettle
-kettle:
-  urdf_path: "../urdf/kettle/mobility.urdf"
-  output_dir: "../merged"
-  joint_config:
-    joint_0: 0.0
-    joint_1: 0.0
-
-# 4. Folding Chair
-folding_chair:
-  urdf_path: "../urdf/folding_chair/mobility.urdf"
-  output_dir: "../merged"
-  joint_config:
-    joint_0: 0.0
-    joint_1: 0.0
-
-# 5. Cardboard box
-cardboard_box:
-  urdf_path: "../urdf/cardboard_box/mobility.urdf"
-  output_dir: "../merged"
-  joint_config:
-    joint_0: 0.0
-    joint_1: 0.0
-    joint_2: 0.0
-    joint_3: 0.0
-
-# 6. Vault
-vault:
-  urdf_path: "../urdf/vault/mobility.urdf"
+microwave:
+  urdf_path: "../urdf/microwave/mobility.urdf"
   output_dir: "../merged"
   joint_config:
     joint_0: 0.785
-    joint_1: 0.0
 
-# 7. Fridge
-fridge:
-  urdf_path: "../urdf/fridge/mobility.urdf"
-  output_dir: "../merged"
-  joint_config:
-    joint_1: 0.785
-    joint_2: 0.785
-
-# 8. Bucket
 bucket:
   urdf_path: "../urdf/bucket/mobility.urdf"
   output_dir: "../merged"
   joint_config:
     joint_0: 1.571
 
-# 9. Scissors
-scissors:
-  urdf_path: "../urdf/scissors/mobility.urdf"
+trashcan:
+  urdf_path: "../urdf/trashcan/mobility.urdf"
   output_dir: "../merged"
   joint_config:
-    joint_0: 0.0
+    joint_0: 0
 
-# 10. Lamp
-lamp:
-  urdf_path: "../urdf/lamp/mobility.urdf"
+fan:
+  urdf_path: "../urdf/fan/mobility.urdf"
+  output_dir: "../merged"
+
+globe:
+  urdf_path: "../urdf/globe/mobility.urdf"
+  output_dir: "../merged"
+
+usb:
+  urdf_path: "../urdf/usb/mobility.urdf"
   output_dir: "../merged"
   joint_config:
-    joint_0: 0.0
-    joint_1: 0.0
-    joint_2: 0.0
+    joint_0: -0.132
+
+
+## Before Mar-10
+#
+## 1. Toilet
+#toilet:
+#  urdf_path: "../urdf/toilet/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.0
+#    joint_1: 1.0472  # pi / 3
+#    joint_2: 0.5236  # pi / 6
+#    joint_3: 0.0
+#
+## 2. Faucet
+#faucet:
+#  urdf_path: "../urdf/faucet/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.0
+#    joint_1: 0.0
+#    joint_2: 0.0
+#
+## 3. Kettle
+#kettle:
+#  urdf_path: "../urdf/kettle/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.0
+#    joint_1: 0.0
+#
+## 4. Folding Chair
+#folding_chair:
+#  urdf_path: "../urdf/folding_chair/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.0
+#    joint_1: 0.0
+#
+## 5. Cardboard box
+#cardboard_box:
+#  urdf_path: "../urdf/cardboard_box/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.0
+#    joint_1: 0.0
+#    joint_2: 0.0
+#    joint_3: 0.0
+#
+## 6. Vault
+#vault:
+#  urdf_path: "../urdf/vault/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.785
+#    joint_1: 0.0
+#
+## 7. Fridge
+#fridge:
+#  urdf_path: "../urdf/fridge/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_1: 0.785
+#    joint_2: 0.785
+#
+## 8. Bucket
+#bucket:
+#  urdf_path: "../urdf/bucket/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 1.571
+#
+## 9. Scissors
+#scissors:
+#  urdf_path: "../urdf/scissors/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.0
+#
+## 10. Lamp
+#lamp:
+#  urdf_path: "../urdf/lamp/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.0
+#    joint_1: 0.0
+#    joint_2: 0.0
+#
+## 11. Microwave
+#microwave:
+#  urdf_path: "../urdf/microwave/mobility.urdf"
+#  output_dir: "../merged"
+#  joint_config:
+#    joint_0: 0.785

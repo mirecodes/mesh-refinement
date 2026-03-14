@@ -13,18 +13,18 @@ class RefinementConfig:
     """
     Centralizes all ms.* call parameters.
     """
-    do_flatten_bottom: bool = True
+    do_flatten_bottom: bool = False
 
     # Toggle steps on/off
     steps: dict = field(default_factory=lambda: {
-        "cleaning": False, # step-1
-        "reconstruction": False, # step-2
+        "cleaning": True, # step-1
+        "reconstruction": True, # step-2
         "vertex_selection": False, # step-3
         "decimation": True, # step-4
         "remeshing": True, # step-5
         "occlusion_repair": False, # step-6
-        "close_holes": False, # step-7
-        "attribute_transfer": False, # step-8
+        "close_holes": True, # step-7
+        "attribute_transfer": True, # step-8
     })
 
     params: dict = field(default_factory=lambda: {
@@ -35,14 +35,14 @@ class RefinementConfig:
         # 2) reconstruction
         "generate_surface_reconstruction_screened_poisson": {
             "depth": 8, # default = 10
-            "fulldepth": 6, # default = 8
+            "fulldepth": 8, # default = 8
             # 'cgdepth': 0,
             # 'scale': 1.1,
             # 'samplespernode': 1.5,
             # 'pointweight': 4,
             # 'iters': 8,
             # 'confidence': False,
-            # 'preclean': True,
+            'preclean': True,
             # 'threads': 16,
         },
         # 3) vertex selection (cut)

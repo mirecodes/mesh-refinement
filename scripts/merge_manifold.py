@@ -116,7 +116,7 @@ def merge_urdf_manifold_ply(urdf_path, joint_cfg, output_path="fused_mesh.ply"):
 if __name__ == "__main__":
     # --- Configuration ---
     cfg = MergeConfig(
-        object_name="vault",  # Change this to "fridge" or other keys in yml
+        object_name="microwave",  # Change this to "fridge" or other keys in yml
         config_file="merge_config.yml"
     )
     # ---------------------

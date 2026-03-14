@@ -365,7 +365,7 @@ def visualize_and_select_vectors_for_rlps(rlps: List[dict],
             vec_actors=vec_actors,
             seg_len=seg_len,
             radius=radius,
-            angle_step_deg=3.0,
+            angle_step_deg=1.5,
             trans_step=trans_step
         )
         plt_rlp.add_callback("KeyPress",  key_cb)

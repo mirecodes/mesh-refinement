@@ -122,9 +122,9 @@ def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", vo
 if __name__ == "__main__":
     # --- Configuration ---
     cfg = VoxelConfig(
-        object_name="lamp",  # Change this to "fridge" or other keys in yml
+        object_name="usb",  # Change this to "fridge" or other keys in yml
         config_file="merge_config.yml",
-        voxel_pitch=0.005 # 해상도를 높이면(값을 줄이면) 더 정밀해지지만 구멍이 생길 수도 있음. 적절한 값 필요.
+        voxel_pitch=0.01 # 해상도를 높이면(값을 줄이면) 더 정밀해지지만 구멍이 생길 수도 있음. 적절한 값 필요.
     )
     # ---------------------
 
