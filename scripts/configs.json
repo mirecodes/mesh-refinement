@@ -1,7 +1,7 @@
 {
-  "object_name": "usb",
+  "object_name": "refrigerator",
   "extension": "ply",
   "parts": {
-    "num": 2
+    "num": 3
   }
 }

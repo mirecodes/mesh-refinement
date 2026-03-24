@@ -6,6 +6,7 @@ import vedo
 from typing import Dict, List, Tuple
 from collections import defaultdict
 from functools import partial
+from dataclasses import dataclass
 
 from json_handler import JsonHandler
 from functions.lib.geometry import normalize, closest_points_between_lines
@@ -14,6 +15,12 @@ from functions.lib.estimation import learn_separator_main
 from functions.lib.mesh import append_patches_to_mesh_files, triangulate_patch_on_loop, save_link_meshes_from_labels
 from functions.lib.urdf import build_joints_from_rlps
 from functions.lib.visualization import recolor_parts, select_parts_interactive, visualize_and_select_vectors_for_rlps
+
+
+@dataclass
+class SegmentConfig:
+    neighbor_threshold: float = 0.25
+    allow_single_loop_rlp: bool = False
 
 
 # =============================================================================
@@ -95,6 +102,59 @@ def build_extrapoints_and_patches(results_list: List[dict],
             patch_faces[pid].append(F.astype(np.int64))
     print("[info] Patch building finished.")
     return patch_vertices, patch_faces
+
+
+def append_single_loop_rlps(results_list: List[dict], rlps: List[dict], verts: np.ndarray) -> None:
+    """Find (i, j) part pairs that have 1 loop on one side and 0 on the other, and add them as RLPs."""
+    print("[info] Checking for single-loop RLPs (1-0 cases)...")
+    pair_to_res = defaultdict(list)
+    for res in results_list:
+        p = res.get('parent', -1)
+        c = res.get('child', -1)
+        if p != -1 and c != -1:
+            pair_to_res[(p, c)].append(res)
+    
+    checked = set()
+    count = 0
+    for (p, c) in pair_to_res.keys():
+        key = tuple(sorted([p, c]))
+        if key in checked: continue
+        checked.add(key)
+        
+        p1, p2 = key
+        loops_12 = pair_to_res.get((p1, p2), [])
+        loops_21 = pair_to_res.get((p2, p1), [])
+        
+        # 1, 0 또는 0, 1 인 경우 확인
+        if (len(loops_12) == 1 and len(loops_21) == 0) or (len(loops_12) == 0 and len(loops_21) == 1):
+            single = loops_12[0] if len(loops_12) == 1 else loops_21[0]
+            
+            already_in = False
+            for r in rlps:
+                if r.get('a') is single or r.get('b') is single:
+                    already_in = True
+                    break
+            
+            if not already_in:
+                loop_idx = single.get('loop', [])
+                if len(loop_idx) > 0:
+                    center = np.mean(verts[np.asarray(loop_idx, dtype=int)], axis=0)
+                else:
+                    center = np.zeros(3)
+                
+                rlp = {
+                    'a': single,
+                    'b': single,  # 다운스트림 처리에서 에러 방지를 위해 b에도 동일하게 할당
+                    'center': center.tolist(),
+                    'parent': single.get('parent', -1),
+                    'child': single.get('child', -1),
+                    'is_single': True
+                }
+                rlps.append(rlp)
+                count += 1
+    
+    if count > 0:
+        print(f"[info] Appended {count} single-loop RLP(s).")
 
 
 # =============================================================================
@@ -207,6 +267,9 @@ def stage_segment(cfgs):
     4) Patch fill (harmonic) and append to meshes
     5) Persist states (states.segment.*)
     """
+
+    segCfgs = SegmentConfig
+
     print("=" * 60)
     print("[info] Starting stage_segment...")
     
@@ -271,7 +334,7 @@ def stage_segment(cfgs):
 
     # separation + clustering + vectors
     # Pass neighbor_threshold from cfgs if available, else default to 0.25
-    neighbor_threshold = getattr(cfgs, 'neighbor_threshold', 0.25)
+    neighbor_threshold = getattr(segCfgs, 'neighbor_threshold', 0.25)
     
     print("[info] Computing separation results...")
     results_list = compute_separation_results(
@@ -282,6 +345,10 @@ def stage_segment(cfgs):
     
     print("[info] Clustering reciprocal loop pairs (RLPs)...")
     rlps = cluster_reciprocal_loop_pairs(results_list, w_pos=1.0, w_ang=0.5, cost_max=None)
+
+    if getattr(segCfgs, 'allow_single_loop_rlp', False):
+        append_single_loop_rlps(results_list, rlps, verts)
+
     print(f"[info]: len rlps {len(rlps)}")
     
     prepare_vectors_for_rlps(rlps)

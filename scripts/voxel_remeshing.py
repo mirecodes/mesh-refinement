@@ -3,17 +3,18 @@ import trimesh
 from yourdfpy import URDF
 import os
 import yaml
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List
 
 
 @dataclass
 class VoxelConfig:
-    # Name of the object to process (must match a key in the YAML config)
-    object_name: str = "vault"
-    
+    # List of object names to process (must match keys in the YAML config)
+    object_names: List[str] = field(default_factory=lambda: ["usb"])
+
     # Path to the YAML configuration file
     config_file: str = "merge_config.yml"
-    
+
     # Voxel pitch (resolution) in meters
     voxel_pitch: float = 0.005
 
@@ -22,9 +23,11 @@ def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", vo
     print(f"[Info] URDF 로드 중: {urdf_path}")
     robot = URDF.load(urdf_path)
 
-    # 1. Configuration 적용
-    valid_cfg = {k: v for k, v in joint_cfg.items() if k in robot.actuated_joint_names}
+    # 1. Configuration 적용 (degree -> radian 변환)
+    joint_cfg_rad = {k: np.deg2rad(float(v)) for k, v in joint_cfg.items()}
+    valid_cfg = {k: v for k, v in joint_cfg_rad.items() if k in robot.actuated_joint_names}
     robot.update_cfg(configuration=valid_cfg)
+
 
     # 2. Scene 객체 가져오기
     scene = robot.scene
@@ -122,18 +125,18 @@ def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", vo
 if __name__ == "__main__":
     # --- Configuration ---
     cfg = VoxelConfig(
-        object_name="usb",  # Change this to "fridge" or other keys in yml
+        # object_names=['toilet', 'faucet', 'folding_chair', 'box', 'refrigerator', 'toaster', 'lamp', 'dispenser', 'safe', 'stapler'],  # 처리할 오브젝트 목록
+        object_names=['folding_chair', 'box'],
         config_file="merge_config.yml",
-        voxel_pitch=0.01 # 해상도를 높이면(값을 줄이면) 더 정밀해지지만 구멍이 생길 수도 있음. 적절한 값 필요.
+        voxel_pitch=0.02
     )
     # ---------------------
 
     config_path = cfg.config_file
     if not os.path.exists(config_path):
-        # Try looking in the same directory as the script
         script_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(script_dir, cfg.config_file)
-    
+
     if not os.path.exists(config_path):
         print(f"[Error] Config file not found: {cfg.config_file}")
         exit(1)
@@ -141,30 +144,35 @@ if __name__ == "__main__":
     with open(config_path, 'r') as f:
         full_config = yaml.safe_load(f)
 
-    object_name = cfg.object_name
-    if object_name not in full_config:
-        print(f"[Error] Object '{object_name}' not found in configuration file.")
-        print(f"Available objects: {list(full_config.keys())}")
-        exit(1)
-
-    obj_config = full_config[object_name]
-    
-    urdf_path = obj_config.get("urdf_path")
-    joint_cfg = obj_config.get("joint_config", {})
-    output_dir = obj_config.get("output_dir", "../merged")
-
-    # Resolve paths
     base_path = os.getcwd()
-    if not os.path.isabs(urdf_path):
-        urdf_path = os.path.join(base_path, urdf_path)
-    
-    if not os.path.isabs(output_dir):
-        output_dir = os.path.join(base_path, output_dir)
-        
-    output_filename = f"{object_name}_voxel.ply"
-    output_path = os.path.join(output_dir, output_filename)
 
-    if os.path.exists(urdf_path):
-        merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path, voxel_pitch=cfg.voxel_pitch)
-    else:
-        print(f"[Error] URDF file not found: {urdf_path}")
+    for object_name in cfg.object_names:
+        print(f"\n{'='*50}")
+        print(f"[Info] Processing: {object_name}")
+        print(f"{'='*50}")
+
+        if object_name not in full_config:
+            print(f"[Skip] '{object_name}' not found in configuration file.")
+            print(f"  Available objects: {list(full_config.keys())}")
+            continue
+
+        obj_config = full_config[object_name]
+
+        urdf_path = obj_config.get("urdf_path")
+        joint_cfg = obj_config.get("joint_config") or {}
+        output_dir = obj_config.get("output_dir", "../merged")
+
+        # Resolve paths
+        if not os.path.isabs(urdf_path):
+            urdf_path = os.path.join(base_path, urdf_path)
+
+        if not os.path.isabs(output_dir):
+            output_dir = os.path.join(base_path, output_dir)
+
+        output_filename = f"{object_name}_voxel.ply"
+        output_path = os.path.join(output_dir, output_filename)
+
+        if os.path.exists(urdf_path):
+            merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path, voxel_pitch=cfg.voxel_pitch)
+        else:
+            print(f"[Error] URDF file not found: {urdf_path}")

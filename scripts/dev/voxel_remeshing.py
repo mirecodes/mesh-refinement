@@ -9,7 +9,8 @@ def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", vo
     robot = URDF.load(urdf_path)
 
     # 1. Configuration 적용
-    valid_cfg = {k: v for k, v in joint_cfg.items() if k in robot.actuated_joint_names}
+    joint_cfg_rad = {k: np.deg2rad(v) for k, v in joint_cfg.items()}
+    valid_cfg = {k: v for k, v in joint_cfg_rad.items() if k in robot.actuated_joint_names}
     robot.update_cfg(configuration=valid_cfg)
 
     # 2. Scene 객체 가져오기
