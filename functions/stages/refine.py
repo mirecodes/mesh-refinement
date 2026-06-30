@@ -13,16 +13,19 @@ class RefinementConfig:
     """
     Centralizes all ms.* call parameters.
     """
-    do_flatten_bottom: bool = False
+    # do_flatten_bottom: bool = False
+    do_flatten_bottom: bool = True
 
     # Toggle steps on/off
     steps: dict = field(default_factory=lambda: {
         "cleaning": True, # step-1
         "reconstruction": True, # step-2
-        "vertex_selection": False, # step-3
+        # "vertex_selection": False, # step-3
+        "vertex_selection": True,
         "decimation": True, # step-4
         "remeshing": True, # step-5
-        "occlusion_repair": False, # step-6
+        # "occlusion_repair": False, # step-6
+        "occlusion_repair": True,
         "close_holes": True, # step-7
         "attribute_transfer": True, # step-8
     })

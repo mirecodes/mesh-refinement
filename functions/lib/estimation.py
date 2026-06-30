@@ -9,7 +9,7 @@ from functions.lib.graph import (
     build_adjacency_graph, filter_boundary_vertices, segregate_loops, 
     filter_proximal_vertices, identify_loop_neighbor, merge_loops_by_topology, extract_boundary_loops_robust
 )
-from functions.lib.visualization import visualize_k_hop_plane
+from functions.lib.visualization import visualize_k_hop_plane, visualize_all_boundary_loops
 
 # -----------------------------------------------------------------------------
 # Trainers: single-plane SVM and polyhedral (multi-plane) classifier
@@ -231,6 +231,8 @@ def learn_separator_main(
     random_state: int | None = 0,
     visualize_results: bool = False,
     neighbor_threshold: float = 0.25, # Added parameter
+    min_size_to_keep: int = 5,
+    show_none_loops: bool = False,
 ) -> list[TypedDict]:
     """
     End-to-end learning of separating boundaries for a selected part.
@@ -255,6 +257,8 @@ def learn_separator_main(
     # Use extract_boundary_loops_robust instead of segregate_loops
     loops = extract_boundary_loops_robust(verts, faces, idx_seeds)
     print(f"[debug] Raw loops: {len(loops)}")
+    for r_idx, r_loop in enumerate(loops):
+        print(f"[debug] Raw loop {r_idx} size: {len(r_loop)}")
 
     # 2. [NEW] Topology 기반 병합 및 필터링
     #    - 서로 2칸(hop) 이내에 있는 루프들은 "같은 경계"로 보고 합칩니다.
@@ -263,10 +267,29 @@ def learn_separator_main(
         adj,
         loops,
         max_hops=2,  # 거리가 2 hop 이내면 병합
-        min_size_to_keep=15  # 병합 후에도 너무 작으면 삭제
+        min_size_to_keep=min_size_to_keep  # 병합 후에도 너무 작으면 삭제
     )
 
     print(f"[info] Found {len(loops)} loops for part {idx_part}.")
+
+    if visualize_results and len(loops) > 0:
+        loop_neighbors_list = []
+        for loop in loops:
+            freq_prox_nbrs = identify_loop_neighbor(
+                loop, adj, vert_label, idx_part, neighbor_threshold=neighbor_threshold
+            )
+            loop_neighbors_list.append(freq_prox_nbrs)
+        
+        visualize_all_boundary_loops(
+            verts=verts,
+            faces=faces,
+            loops=loops,
+            loop_neighbors=loop_neighbors_list,
+            parent_part=idx_part,
+            title=f"All Boundary Loops for Part {idx_part}",
+            display=visualize_results,
+            show_none_loops=show_none_loops
+        )
 
     # normalize `method` to a list of methods to run
     if isinstance(method, (list, tuple)):

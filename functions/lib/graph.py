@@ -804,15 +804,26 @@ def _build_cost_matrix(A: List[Dict], B: List[Dict], w_pos: float, w_ang: float)
     C = np.zeros((m, n), dtype=float)
     for i, a in enumerate(A):
         ca = np.asarray(a["center"], dtype=float)
-        na = normalize(np.asarray(a["pca_normal"], dtype=float))
+        lin_A = a.get("linear", {})
+        if lin_A and lin_A.get("plane") and len(lin_A["plane"]) > 0:
+            na = normalize(np.asarray(lin_A["plane"][0][0], dtype=float))
+        else:
+            na = normalize(np.asarray(a["pca_normal"], dtype=float))
+            
         for j, b in enumerate(B):
             cb = np.asarray(b["center"], dtype=float)
-            nb = normalize(np.asarray(b["pca_normal"], dtype=float))
+            lin_B = b.get("linear", {})
+            if lin_B and lin_B.get("plane") and len(lin_B["plane"]) > 0:
+                nb = normalize(np.asarray(lin_B["plane"][0][0], dtype=float))
+            else:
+                nb = normalize(np.asarray(b["pca_normal"], dtype=float))
+                
             dpos = np.linalg.norm(ca - cb)
             cos_abs = abs(float(np.dot(na, nb)))
             dang = 1.0 - cos_abs
             C[i, j] = w_pos * dpos + w_ang * dang
     return C
+
 
 def _hungarian_or_greedy(C: np.ndarray) -> List[Tuple[int, int]]:
     """Try SciPy Hungarian; fallback to simple greedy (deterministic)."""
@@ -931,9 +942,20 @@ def cluster_reciprocal_loop_pairs(
             a = A[ia]; b = B[ib]
             ca = np.asarray(a["center"], dtype=float)
             cb = np.asarray(b["center"], dtype=float)
-            na = normalize(np.asarray(a["pca_normal"], dtype=float))
-            nb = normalize(np.asarray(b["pca_normal"], dtype=float))
-            # normal 방향 정합
+            
+            lin_A = a.get("linear", {})
+            if lin_A and lin_A.get("plane") and len(lin_A["plane"]) > 0:
+                na = normalize(np.asarray(lin_A["plane"][0][0], dtype=float))
+            else:
+                na = normalize(np.asarray(a["pca_normal"], dtype=float))
+
+            lin_B = b.get("linear", {})
+            if lin_B and lin_B.get("plane") and len(lin_B["plane"]) > 0:
+                nb = normalize(np.asarray(lin_B["plane"][0][0], dtype=float))
+            else:
+                nb = normalize(np.asarray(b["pca_normal"], dtype=float))
+                
+            # normal 방향 정합 (90도 이상 벌어지면 뒤집어서 일치시킴)
             if float(np.dot(na, nb)) < 0.0:
                 nb = -nb
             n_pair = normalize(na + nb) if np.linalg.norm(na + nb) > 1e-9 else na

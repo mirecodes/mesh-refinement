@@ -26,8 +26,12 @@ def post_mesh_repair(func):
 
 
 def repair_mesh(ms: pymeshlab.MeshSet):
-    ms.meshing_repair_non_manifold_edges()
-    ms.meshing_merge_close_vertices()
+    ms.meshing_remove_duplicate_vertices()
+    ms.meshing_remove_duplicate_faces()
+    ms.meshing_remove_unreferenced_vertices()
+    ms.meshing_merge_close_vertices() # may cause problem
+    ms.meshing_repair_non_manifold_edges(method=0)
+    ms.meshing_repair_non_manifold_vertices()
     return ms
 
 

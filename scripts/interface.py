@@ -1,4 +1,12 @@
 import os
+import sys
+from pathlib import Path
+
+# Add project root to python path to resolve local packages
+project_root = str(Path(__file__).resolve().parent.parent)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
 from dataclasses import dataclass, field
 
 import pymeshlab
@@ -15,7 +23,7 @@ class SystemConfigs():
     # --------------------------------------------------------------------------
 
     # Configuration directories
-    json_config_path = "configs.json"
+    json_config_path = os.path.join(os.path.dirname(__file__), "configs.json")
 
     # Operational controller
     enable_stage_align: bool = False
@@ -30,7 +38,7 @@ class SystemConfigs():
     # URDF Generation Option
     # If True, the URDF will be generated in the original coordinate system (before transform).
     # If False, it will be in the transformed coordinate system.
-    urdf_use_original_coordinates: bool = True
+    urdf_use_original_coordinates: bool = False
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
@@ -52,7 +60,7 @@ class SystemConfigs():
     fname_mesh = f"mesh.{extension}"
     fname_gaussian = f"gaussian.{extension}"
 
-    root_dir: str = field(default_factory=os.getcwd, init=False)
+    root_dir: str = field(default_factory=lambda: os.path.dirname(os.path.abspath(__file__)), init=False)
     in_dir: str = field(init=False)
     out_dir: str = field(init=False)
     working_dir: str = field(init=False)

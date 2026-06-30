@@ -18,8 +18,11 @@ class VoxelConfig:
     # Voxel pitch (resolution) in meters
     voxel_pitch: float = 0.005
 
+    # Rotation around Z-axis in degrees
+    rotation_deg: float = 0.0
 
-def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", voxel_pitch=0.005):
+
+def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", voxel_pitch=0.005, rotation_deg=0.0):
     print(f"[Info] URDF 로드 중: {urdf_path}")
     robot = URDF.load(urdf_path)
 
@@ -46,6 +49,13 @@ def merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path="fused_voxel.ply", vo
     print("[Info] 메쉬들을 하나의 덩어리로 뭉칩니다 (Concatenate)...")
     combined_raw = trimesh.util.concatenate(all_meshes)
     
+    # 2.5 Apply Rotation (around Z-axis, at origin)
+    if rotation_deg != 0:
+        print(f"[Info] {rotation_deg}도 회전 적용 중 (Z-axis)...")
+        angle_rad = np.deg2rad(rotation_deg)
+        rot_matrix = trimesh.transformations.rotation_matrix(angle_rad, [0, 0, 1])
+        combined_raw.apply_transform(rot_matrix)
+
     # 원본 메쉬의 중심점과 바운딩 박스 저장 (나중에 복원 확인용)
     raw_bounds = combined_raw.bounds
     raw_center = combined_raw.centroid
@@ -126,9 +136,10 @@ if __name__ == "__main__":
     # --- Configuration ---
     cfg = VoxelConfig(
         # object_names=['toilet', 'faucet', 'folding_chair', 'box', 'refrigerator', 'toaster', 'lamp', 'dispenser', 'safe', 'stapler'],  # 처리할 오브젝트 목록
-        object_names=['folding_chair', 'box'],
+        object_names=['faucet'],
         config_file="merge_config.yml",
-        voxel_pitch=0.02
+        voxel_pitch=0.02,
+        rotation_deg=0  # 예: 90, 180, 270 등
     )
     # ---------------------
 
@@ -173,6 +184,6 @@ if __name__ == "__main__":
         output_path = os.path.join(output_dir, output_filename)
 
         if os.path.exists(urdf_path):
-            merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path, voxel_pitch=cfg.voxel_pitch)
+            merge_urdf_voxel_ply(urdf_path, joint_cfg, output_path, voxel_pitch=cfg.voxel_pitch, rotation_deg=cfg.rotation_deg)
         else:
             print(f"[Error] URDF file not found: {urdf_path}")

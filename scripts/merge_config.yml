@@ -49,6 +49,8 @@ toilet:
 faucet:
   urdf_path: "../urdf/faucet/mobility.urdf"
   output_dir: "../merged"
+  joint_config:
+    joint_3: 180
 
 folding_chair:
   urdf_path: "../urdf/folding_chair/mobility.urdf"

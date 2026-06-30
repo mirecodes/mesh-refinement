@@ -14,13 +14,15 @@ from functions.lib.graph import build_adjacency_graph, classify_vertices, cluste
 from functions.lib.estimation import learn_separator_main
 from functions.lib.mesh import append_patches_to_mesh_files, triangulate_patch_on_loop, save_link_meshes_from_labels
 from functions.lib.urdf import build_joints_from_rlps
-from functions.lib.visualization import recolor_parts, select_parts_interactive, visualize_and_select_vectors_for_rlps
+from functions.lib.visualization import recolor_parts, select_parts_interactive, visualize_and_select_vectors_for_rlps, visualize_rlp_clustering, visualize_segmented_parts
 
 
 @dataclass
 class SegmentConfig:
     neighbor_threshold: float = 0.25
     allow_single_loop_rlp: bool = False
+    min_size_to_keep: int = 2
+    show_none_loops: bool = True
 
 
 # =============================================================================
@@ -33,7 +35,9 @@ def compute_separation_results(ms: pymeshlab.MeshSet,
                                vert_label,
                                method: str = "all",
                                visualize_results: bool = False,
-                               neighbor_threshold: float = 0.25) -> List[dict]:
+                               neighbor_threshold: float = 0.25,
+                               min_size_to_keep: int = 5,
+                               show_none_loops: bool = False) -> List[dict]:
     """Run learn_separator_main per category and flatten outputs."""
     results: Dict[int, dict | List[dict]] = {}
     print(f"[info] Starting separation computation for {categories_num} categories...")
@@ -46,7 +50,9 @@ def compute_separation_results(ms: pymeshlab.MeshSet,
             use_signed_dist=True, sdf_thresh=0.0,
             balance='None',
             visualize_results=visualize_results,
-            neighbor_threshold=neighbor_threshold
+            neighbor_threshold=neighbor_threshold,
+            min_size_to_keep=min_size_to_keep,
+            show_none_loops=show_none_loops
         )
         results[idx_part] = out
     results_list = [item for v in results.values() for item in (v if isinstance(v, list) else [v])]
@@ -70,17 +76,98 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
             dA = dB = 0.0
         if float(np.dot(nA, nB)) < 0.0:
             nB = -nB
-        n = normalize(np.mean(np.vstack([nA, nB]), axis=0))
-        d = 0.5 * (dA + dB)
-        rlp['vectors'] = [{'center': center, 'n': n, 'd': d}]
+        n_plane = normalize(np.mean(np.vstack([nA, nB]), axis=0))
+        d_plane = 0.5 * (dA + dB)
+        
+        # 1. Add the main linear normal vector candidate (as list)
+        rlp['vectors'] = [{
+            'center': center if isinstance(center, list) else center.tolist(),
+            'n': n_plane.tolist(),
+            'd': d_plane.tolist() if isinstance(d_plane, np.ndarray) else d_plane
+        }]
 
-        A = rlp['a']['polyhedral']
-        if A.get('plane') and len(A['plane']) > 0:
-            planes = A['plane']; m = len(planes)
+        # 2. Extract polyhedral cross products from BOTH directions
+        poly_A = rlp['a'].get('polyhedral', {})
+        poly_B = rlp['b'].get('polyhedral', {})
+        
+        lines_A = []
+        if poly_A.get('plane') and len(poly_A['plane']) > 0:
+            planes = poly_A['plane']; m = len(planes)
             for u in range(m):
                 for v in range(u + 1, m):
-                    n = np.cross(planes[u][0], planes[v][0])
-                    rlp['vectors'].append({'center': center, 'n': n, 'd': np.zeros(3)})
+                    n_cross = np.cross(planes[u][0], planes[v][0])
+                    if np.linalg.norm(n_cross) > 1e-6:
+                        lines_A.append(normalize(n_cross))
+                        
+        lines_B = []
+        if poly_B.get('plane') and len(poly_B['plane']) > 0:
+            planes = poly_B['plane']; m = len(planes)
+            for u in range(m):
+                for v in range(u + 1, m):
+                    n_cross = np.cross(planes[u][0], planes[v][0])
+                    if np.linalg.norm(n_cross) > 1e-6:
+                        lines_B.append(normalize(n_cross))
+
+        # 3. Match and merge lines_A and lines_B
+        merged_lines = []
+        matched_A = set()
+        matched_B = set()
+        
+        # Build all candidate pairs with absolute dot product (handles 180-degree flipped vectors)
+        candidates = []
+        for idx_a, la in enumerate(lines_A):
+            for idx_b, lb in enumerate(lines_B):
+                dot_val = abs(np.dot(la, lb))
+                candidates.append((dot_val, idx_a, idx_b))
+                
+        # Sort by similarity descending
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        # Match threshold: 30 degrees -> cos(30) = 0.866025
+        cos_30 = 0.866025
+        for dot_val, idx_a, idx_b in candidates:
+            if dot_val < cos_30:
+                break
+            if idx_a in matched_A or idx_b in matched_B:
+                continue
+                
+            la = lines_A[idx_a]
+            lb = lines_B[idx_b]
+            # Flip direction if they are opposite (180 degrees)
+            if np.dot(la, lb) < 0.0:
+                lb = -lb
+            l_merged = normalize(la + lb)
+            merged_lines.append(l_merged)
+            matched_A.add(idx_a)
+            matched_B.add(idx_b)
+                
+        # Include unmatched lines from both sides
+        for idx_a, la in enumerate(lines_A):
+            if idx_a not in matched_A:
+                merged_lines.append(la)
+        for idx_b, lb in enumerate(lines_B):
+            if idx_b not in matched_B:
+                merged_lines.append(lb)
+
+        # 4. Add the first merged intersection line & the 3rd recommended vector
+        if len(merged_lines) > 0:
+            line = merged_lines[0]
+            # Add intersection line candidate
+            rlp['vectors'].append({
+                'center': center if isinstance(center, list) else center.tolist(),
+                'n': line.tolist(),
+                'd': [0.0, 0.0, 0.0]
+            })
+            
+            # Add 3rd vector (perpendicular to both main plane normal and the intersection line)
+            n_third = np.cross(n_plane, line)
+            if np.linalg.norm(n_third) > 1e-6:
+                rlp['vectors'].append({
+                    'center': center if isinstance(center, list) else center.tolist(),
+                    'n': normalize(n_third).tolist(),
+                    'd': [0.0, 0.0, 0.0]
+                })
+                
     print("[info] Vector preparation finished.")
 
 
@@ -332,19 +419,30 @@ def stage_segment(cfgs):
     vert_label = classify_vertices(verts, categories, use_signed_dist=True).astype(int)
     print("[info] Graph build and classification finished.")
 
+    if cfgs.debug_mode:
+        visualize_segmented_parts(verts, faces, vert_label, display=cfgs.debug_mode)
+
     # separation + clustering + vectors
-    # Pass neighbor_threshold from cfgs if available, else default to 0.25
+    # Pass neighbor_threshold, min_size_to_keep, and show_none_loops from cfgs if available
     neighbor_threshold = getattr(segCfgs, 'neighbor_threshold', 0.25)
+    min_size_to_keep = getattr(segCfgs, 'min_size_to_keep', 5)
+    show_none_loops = getattr(segCfgs, 'show_none_loops', False)
     
     print("[info] Computing separation results...")
     results_list = compute_separation_results(
         ms, categories, categories_num, adj, vert_label, 
         method="all", visualize_results=cfgs.debug_mode,
-        neighbor_threshold=neighbor_threshold
+        neighbor_threshold=neighbor_threshold,
+        min_size_to_keep=min_size_to_keep,
+        show_none_loops=show_none_loops
     )
     
     print("[info] Clustering reciprocal loop pairs (RLPs)...")
     rlps = cluster_reciprocal_loop_pairs(results_list, w_pos=1.0, w_ang=0.5, cost_max=None)
+
+    # Visualizing the RLP clustering details
+    if cfgs.debug_mode:
+        visualize_rlp_clustering(verts, faces, parts, categories, results_list, rlps)
 
     if getattr(segCfgs, 'allow_single_loop_rlp', False):
         append_single_loop_rlps(results_list, rlps, verts)

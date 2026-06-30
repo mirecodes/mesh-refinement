@@ -1,7 +1,7 @@
 {
-  "object_name": "refrigerator",
+  "object_name": "proto_wifi",
   "extension": "ply",
   "parts": {
-    "num": 3
+    "num": 5
   }
 }

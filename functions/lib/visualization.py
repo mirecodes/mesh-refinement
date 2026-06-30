@@ -343,7 +343,7 @@ def visualize_and_select_vectors_for_rlps(rlps: List[dict],
             idx2actor[vi] = a
             valid_indices.append(vi)
 
-        plt_rlp = vedo.Plotter(title=f"RLP #{i}: parts {p_idx} ↔ {q_idx}", axes=1)
+        plt_rlp = vedo.Plotter(title=f"RLP #{i}: parts {p_idx} ↔ {q_idx}", axes=0)
 
         # Disable default VTK keybindings
         iren = plt_rlp.interactor
@@ -454,15 +454,7 @@ def visualize_boundary_loops(
 
     # 5) axes & show
     plt = vedo.Plotter(bg=background, title="Boundary loops (+ boundary points)")
-    _axes_target = actors[0] if show_original_mesh else (vpart or vedo.Mesh([verts, faces]))
-    try:
-        axes_actor = vedo.Axes(_axes_target, axesType=4, xyGrid=True)
-    except TypeError:
-        try:
-            axes_actor = vedo.Axes(_axes_target, xyGrid=True)
-        except TypeError:
-            axes_actor = vedo.Axes(_axes_target)
-    plt.show(actors + [axes_actor], viewup="z").close()
+    plt.show(actors, viewup="z").close()
 
 
 def visualize_k_hop_plane(
@@ -510,12 +502,342 @@ def visualize_k_hop_plane(
 
     # 5) Show plot
     plt = vedo.Plotter(bg="white", title=title)
-    _axes_target = mesh
-    try:
-        axes_actor = vedo.Axes(_axes_target, axesType=4, xyGrid=True)
-    except TypeError:
-        try:
-            axes_actor = vedo.Axes(_axes_target, xyGrid=True)
-        except TypeError:
-            axes_actor = vedo.Axes(_axes_target)
-    plt.show(actors + [axes_actor], viewup="z").close()
+    plt.show(actors, viewup="z").close()
+
+
+def visualize_rlp_clustering(verts: np.ndarray,
+                             faces: np.ndarray,
+                             parts: List[trimesh.Trimesh],
+                             categories: List[List[trimesh.Trimesh]],
+                             results_list: List[dict],
+                             rlps: List[dict]) -> None:
+    """
+    Detailed visualization of RLP clustering showing linear and polyhedral intersection
+    matches separately for each generated RLP.
+    """
+    print("[info] Starting RLP clustering visualization...")
+    
+    scene_diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
+    arrow_len = scene_diag * 0.15 if np.isfinite(scene_diag) and scene_diag > 0 else 1.0
+    radius_arrow = arrow_len * 0.025
+    radius_sphere = arrow_len * 0.05
+    
+    # Custom arrow settings: thicker shaft, larger head
+    shaft_rad = radius_arrow * 2.5
+    head_rad = radius_arrow * 5.5
+    head_len = arrow_len * 0.25
+    
+    for idx_r, rlp in enumerate(rlps):
+        pair = rlp.get('parts')
+        if not pair:
+            continue
+        i, j = pair
+        a = rlp.get("a")
+        b = rlp.get("b")
+        if not a or not b:
+            continue
+            
+        print(f"[info] Visualizing RLP #{idx_r} (parts {i} ↔ {j}). Close window to proceed.")
+        
+        # 1. Collect and prepare k-hop vertices for this RLP
+        part_i_verts = set()
+        part_j_verts = set()
+        
+        if 'idx_pos' in a: part_i_verts.update(a['idx_pos'])
+        if 'idx_neg' in a: part_j_verts.update(a['idx_neg'])
+        if 'idx_pos' in b: part_j_verts.update(b['idx_pos'])
+        if 'idx_neg' in b: part_i_verts.update(b['idx_neg'])
+        
+        # Create base elements shared across windows
+        mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.08)
+        if hasattr(mesh_actor, "pickable"):
+            mesh_actor.pickable(False)
+            
+        spheres_i = None
+        if part_i_verts:
+            pts_i = verts[np.array(list(part_i_verts), dtype=int)]
+            spheres_i = vedo.Spheres(pts_i, r=scene_diag*0.003, c="red").alpha(0.1) # 90% transparent (alpha=0.1)
+            if hasattr(spheres_i, "pickable"): spheres_i.pickable(False)
+            
+        spheres_j = None
+        if part_j_verts:
+            pts_j = verts[np.array(list(part_j_verts), dtype=int)]
+            spheres_j = vedo.Spheres(pts_j, r=scene_diag*0.003, c="blue").alpha(0.1) # 90% transparent (alpha=0.1)
+            if hasattr(spheres_j, "pickable"): spheres_j.pickable(False)
+            
+        ca = np.asarray(a["center"], dtype=float)
+        cb = np.asarray(b["center"], dtype=float)
+        c_pair = np.asarray(rlp["center"], dtype=float)
+        
+        # Connection line between matching loop centers
+        conn_line = vedo.Line(ca, cb).c("orange").lw(3)
+        
+        # -------------------------------------------------------------
+        # Window 1: Linear Normal RLP
+        # -------------------------------------------------------------
+        lin_actors = [mesh_actor, conn_line]
+        if spheres_i: lin_actors.append(spheres_i)
+        if spheres_j: lin_actors.append(spheres_j)
+        
+        # Red arrow for part i -> j loop A
+        lin_A = a.get('linear', {})
+        if lin_A.get('plane') and len(lin_A['plane']) > 0:
+            nA = np.asarray(lin_A['plane'][0][0], dtype=float)
+        else:
+            nA = np.asarray(a.get('pca_normal', [0,0,1]), dtype=float)
+        nA = normalize(nA)
+        arrow_a = vedo.Arrow(ca, ca + arrow_len * nA, c="red", shaft_radius=shaft_rad, head_radius=head_rad, head_length=head_len)
+        lbl_a = vedo.Text3D(f"Linear Normal (Part {i})", pos=ca + np.array([0, 0, radius_sphere*1.5]), s=radius_sphere*0.4, c="red")
+        lin_actors.extend([arrow_a, lbl_a])
+        
+        # Blue arrow for part j -> i loop B (aligned with nA)
+        lin_B = b.get('linear', {})
+        if lin_B.get('plane') and len(lin_B['plane']) > 0:
+            nB = np.asarray(lin_B['plane'][0][0], dtype=float)
+        else:
+            nB = np.asarray(b.get('pca_normal', [0,0,1]), dtype=float)
+        nB = normalize(nB)
+        if np.dot(nA, nB) < 0.0:
+            nB = -nB
+        arrow_b = vedo.Arrow(cb, cb + arrow_len * nB, c="blue", shaft_radius=shaft_rad, head_radius=head_rad, head_length=head_len)
+        lbl_b = vedo.Text3D(f"Linear Normal (Part {j})", pos=cb + np.array([0, 0, radius_sphere*1.5]), s=radius_sphere*0.4, c="blue")
+        lin_actors.extend([arrow_b, lbl_b])
+        
+        # Hot-pink arrow for merged Linear RLP
+        n_pair = normalize(rlp["normal"])
+        arrow_rlp = vedo.Arrow(c_pair, c_pair + arrow_len * n_pair, c="magenta", shaft_radius=shaft_rad*1.4, head_radius=head_rad*1.3, head_length=head_len*1.2)
+        sphere_rlp = vedo.Sphere(pos=c_pair, r=radius_sphere*1.2).c("magenta")
+        lbl_rlp = vedo.Text3D(f"Merged Linear RLP\nCost: {rlp['cost']:.3f}", pos=c_pair - np.array([0, 0, radius_sphere*2.0]), s=radius_sphere*0.45, c="magenta")
+        lin_actors.extend([arrow_rlp, sphere_rlp, lbl_rlp])
+        
+        plt1 = vedo.Plotter(title=f"RLP #{idx_r} (Linear Normal Match): parts {i} ↔ {j}", axes=0)
+        plt1.show(lin_actors, interactive=True).close()
+        
+        # -------------------------------------------------------------
+        # Window 2: Polyhedral Intersection RLP
+        # -------------------------------------------------------------
+        poly_A = a.get('polyhedral', {})
+        poly_B = b.get('polyhedral', {})
+        
+        lines_A = []
+        if poly_A.get('plane') and len(poly_A['plane']) > 0:
+            planes = poly_A['plane']; m = len(planes)
+            for u in range(m):
+                for v in range(u + 1, m):
+                    n_cross = np.cross(planes[u][0], planes[v][0])
+                    if np.linalg.norm(n_cross) > 1e-6:
+                        lines_A.append(normalize(n_cross))
+                        
+        lines_B = []
+        if poly_B.get('plane') and len(poly_B['plane']) > 0:
+            planes = poly_B['plane']; m = len(planes)
+            for u in range(m):
+                for v in range(u + 1, m):
+                    n_cross = np.cross(planes[u][0], planes[v][0])
+                    if np.linalg.norm(n_cross) > 1e-6:
+                        lines_B.append(normalize(n_cross))
+                        
+        # Skip polyhedral window if no polyhedral lines found on either side
+        if not lines_A and not lines_B:
+            continue
+            
+        poly_actors = [mesh_actor, conn_line]
+        if spheres_i: poly_actors.append(spheres_i)
+        if spheres_j: poly_actors.append(spheres_j)
+        
+        # Draw red polyhedral cross lines for A
+        for idx_a, la in enumerate(lines_A):
+            arrow_la = vedo.Arrow(ca, ca + arrow_len * la, c="red", shaft_radius=shaft_rad, head_radius=head_rad, head_length=head_len)
+            lbl_la = vedo.Text3D(f"Poly Line A#{idx_a}", pos=ca + la * arrow_len * 0.5 + [0,0,radius_sphere], s=radius_sphere*0.35, c="red")
+            poly_actors.extend([arrow_la, lbl_la])
+            
+        # Draw blue polyhedral cross lines for B
+        for idx_b, lb in enumerate(lines_B):
+            arrow_lb = vedo.Arrow(cb, cb + arrow_len * lb, c="blue", shaft_radius=shaft_rad, head_radius=head_rad, head_length=head_len)
+            lbl_lb = vedo.Text3D(f"Poly Line B#{idx_b}", pos=cb + lb * arrow_len * 0.5 + [0,0,radius_sphere], s=radius_sphere*0.35, c="blue")
+            poly_actors.extend([arrow_lb, lbl_lb])
+            
+        # Perform matching of lines_A and lines_B (same logic as prepare_vectors_for_rlps)
+        candidates_match = []
+        for idx_a, la in enumerate(lines_A):
+            for idx_b, lb in enumerate(lines_B):
+                dot_val = abs(np.dot(la, lb))
+                candidates_match.append((dot_val, idx_a, idx_b))
+        candidates_match.sort(key=lambda x: x[0], reverse=True)
+        
+        matched_A = set()
+        matched_B = set()
+        cos_30 = 0.866025
+        merged_lines = []
+        
+        for dot_val, idx_a, idx_b in candidates_match:
+            if dot_val < cos_30:
+                break
+            if idx_a in matched_A or idx_b in matched_B:
+                continue
+            la = lines_A[idx_a]
+            lb = lines_B[idx_b]
+            if np.dot(la, lb) < 0.0:
+                lb = -lb
+            l_merged = normalize(la + lb)
+            merged_lines.append(l_merged)
+            matched_A.add(idx_a)
+            matched_B.add(idx_b)
+            
+        # Add unmatched lines
+        for idx_a, la in enumerate(lines_A):
+            if idx_a not in matched_A:
+                merged_lines.append(la)
+        for idx_b, lb in enumerate(lines_B):
+            if idx_b not in matched_B:
+                merged_lines.append(lb)
+                
+        # Draw final hot-pink merged polyhedral lines (Window 2 actors)
+        for idx_m, line in enumerate(merged_lines):
+            # Intersection line (merged)
+            arrow_m = vedo.Arrow(c_pair, c_pair + arrow_len * line, c="magenta", shaft_radius=shaft_rad*1.4, head_radius=head_rad*1.3, head_length=head_len*1.2)
+            lbl_m = vedo.Text3D(f"Merged Poly Line #{idx_m}", pos=c_pair + line * arrow_len * 0.7 + [0,0,radius_sphere], s=radius_sphere*0.4, c="magenta")
+            poly_actors.extend([arrow_m, lbl_m])
+            
+        plt2 = vedo.Plotter(title=f"RLP #{idx_r} (Polyhedral Intersection Match): parts {i} ↔ {j}", axes=0)
+        plt2.show(poly_actors, interactive=True).close()
+        
+        # -------------------------------------------------------------
+        # Window 3: 3rd Perpendicular Coordinate Frame
+        # -------------------------------------------------------------
+        frame_actors = [mesh_actor]
+        if spheres_i: frame_actors.append(spheres_i)
+        if spheres_j: frame_actors.append(spheres_j)
+        
+        # 1. Main plane normal (merged) in magenta
+        arrow_norm = vedo.Arrow(c_pair, c_pair + arrow_len * n_pair, c="magenta", shaft_radius=shaft_rad*1.4, head_radius=head_rad*1.3, head_length=head_len*1.2)
+        lbl_norm = vedo.Text3D("1. Plane Normal", pos=c_pair + n_pair * arrow_len * 0.7 + [0,0,radius_sphere], s=radius_sphere*0.4, c="magenta")
+        frame_actors.extend([arrow_norm, lbl_norm])
+        
+        # 2. First Intersection line & its perpendicular 3rd recommended vector in magenta
+        has_frame = False
+        if len(merged_lines) > 0:
+            line = merged_lines[0]
+            # 2. Merged Intersection line in magenta
+            arrow_m = vedo.Arrow(c_pair, c_pair + arrow_len * line, c="magenta", shaft_radius=shaft_rad*1.4, head_radius=head_rad*1.3, head_length=head_len*1.2)
+            lbl_m = vedo.Text3D("2. Intersection Line", pos=c_pair + line * arrow_len * 0.7 + [0,0,radius_sphere*1.5], s=radius_sphere*0.4, c="magenta")
+            frame_actors.extend([arrow_m, lbl_m])
+            
+            # 3. 3rd Recommended Vector (perpendicular to both normal and intersection line) in magenta
+            n_third = np.cross(n_pair, line)
+            if np.linalg.norm(n_third) > 1e-6:
+                n_third = normalize(n_third)
+                arrow_t = vedo.Arrow(c_pair, c_pair + arrow_len * n_third, c="magenta", shaft_radius=shaft_rad*1.4, head_radius=head_rad*1.3, head_length=head_len*1.2)
+                lbl_t = vedo.Text3D("3. Perp Recommended Axis", pos=c_pair + n_third * arrow_len * 0.7 - [0,0,radius_sphere*1.5], s=radius_sphere*0.4, c="magenta")
+                frame_actors.extend([arrow_t, lbl_t])
+                has_frame = True
+                
+        if has_frame:
+            plt3 = vedo.Plotter(title=f"RLP #{idx_r} (3rd Perpendicular Coordinate Frame): parts {i} ↔ {j}", axes=0)
+            plt3.show(frame_actors, interactive=True).close()
+
+
+def visualize_all_boundary_loops(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    loops: list,
+    loop_neighbors: list,
+    parent_part: int,
+    title: str = "All Boundary Loops",
+    display: bool = True,
+    show_none_loops: bool = False,
+):
+    """
+    Visualize all boundary loops for a part with different colors and labels indicating neighbors.
+    """
+    if not display:
+        return
+
+    actors = []
+
+    # 1) Base mesh (semi-transparent)
+    mesh = vedo.Mesh([verts, faces]).c("lightgray").alpha(0.2)
+    actors.append(mesh)
+
+    # Beautiful pastel colors: (R, G, B) on 0-255 scale
+    pastel_rgbs = [
+        (255, 120, 120),  # Pastel Red
+        (120, 220, 120),  # Pastel Green
+        (245, 220, 100),  # Pastel Yellow
+        (120, 180, 255),  # Pastel Blue
+        (200, 150, 255),  # Pastel Purple
+        (255, 180, 120),  # Pastel Orange
+        (255, 150, 200),  # Pastel Pink
+        (120, 220, 220),  # Pastel Teal
+        (150, 255, 200),  # Pastel Mint
+    ]
+    
+    # Calculate scene diagonal for scaling text sizes
+    scene_diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
+    sphere_r = scene_diag * 0.005 if np.isfinite(scene_diag) and scene_diag > 0 else 0.005
+
+    for i, loop in enumerate(loops):
+        neighbors = loop_neighbors[i]
+        
+        # Optionally skip showing loops with no neighbors (connecting to None/N)
+        if not neighbors and not show_none_loops:
+            continue
+
+        color_rgb = pastel_rgbs[i % len(pastel_rgbs)]
+        color_vedo = tuple(c / 255.0 for c in color_rgb)
+        loop_idx = np.asarray(loop, dtype=int)
+        
+        # Display loop vertices as dots
+        loop_pts = vedo.Spheres(verts[loop_idx], r=sphere_r, c=color_vedo, res=8).alpha(1.0)
+        actors.append(loop_pts)
+        
+        # Print information to the terminal with a colored square block (ANSI TrueColor)
+        neighbors_str = ",".join(map(str, neighbors)) if neighbors else "N"
+        r, g, b = color_rgb
+        color_block = f"\033[38;2;{r};{g};{b}m■\033[0m"
+        print(f"[info] Cycle {i+1} ({color_block}): Part {parent_part} -> {neighbors_str}")
+
+    # Show plot
+    plt = vedo.Plotter(bg="white", title=title)
+    plt.show(actors, viewup="z").close()
+
+
+def visualize_segmented_parts(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    vert_label: np.ndarray,
+    title: str = "Segmented Parts Preview",
+    display: bool = True,
+):
+    """
+    Visualize the entire mesh with vertices colored by their segmented part ID.
+    Highly transparent (alpha=0.4) to show the interior and structure.
+    """
+    if not display:
+        return
+
+    # Distinct colormap for categories (0: background, 1..N: parts)
+    colormap = np.array([
+        [220, 220, 220],  # 0: Light gray
+        [240, 50, 50],    # 1: Red
+        [50, 144, 240],   # 2: Blue
+        [50, 204, 50],    # 3: Green
+        [240, 163, 10],   # 4: Orange
+        [150, 50, 240],   # 5: Purple
+        [10, 218, 240],   # 6: Cyan
+        [240, 50, 180],   # 7: Magenta
+        [240, 228, 10],   # 8: Yellow
+        [140, 80, 30],    # 9: Brown
+        [50, 240, 163],   # 10: Lime/Teal
+    ], dtype=np.uint8)
+
+    num_colors = len(colormap)
+    # Map labels to colors
+    rgb_colors = np.array([colormap[int(l) % num_colors] for l in vert_label], dtype=np.uint8)
+
+    mesh = vedo.Mesh([verts, faces])
+    mesh.pointcolors = rgb_colors
+    mesh.alpha(0.4)  # High transparency as requested
+
+    plt = vedo.Plotter(bg="white", title=title)
+    plt.show([mesh], viewup="z").close()

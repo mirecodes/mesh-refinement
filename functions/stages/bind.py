@@ -15,7 +15,8 @@ from plyfile import PlyData, PlyElement
 @dataclass
 class BindCfgs:
     k_neighbors: int = 3            # fixed: use k=3
-    max_dist_rel: float = 0.20      # exclude if nearest vertex farther than this * mesh diagonal
+    # max_dist_rel: float = 0.20      # exclude if nearest vertex farther than this * mesh diagonal
+    max_dist_rel: float = 1.00      # exclude if nearest vertex farther than this * mesh diagonal
     z_cut_rel: float = -1000.0        # exclude if Gaussian z < (z_cut_rel * mesh diagonal)
     verbose: bool = True
 

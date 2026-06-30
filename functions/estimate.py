@@ -541,15 +541,7 @@ def visualize_boundary_loops(
 
     # 5) axes & show
     plt = vedo.Plotter(bg=background, title="Boundary loops (+ boundary points)")
-    _axes_target = actors[0] if show_original_mesh else (vpart or vedo.Mesh([verts, faces]))
-    try:
-        axes_actor = vedo.Axes(_axes_target, axesType=4, xyGrid=True)
-    except TypeError:
-        try:
-            axes_actor = vedo.Axes(_axes_target, xyGrid=True)
-        except TypeError:
-            axes_actor = vedo.Axes(_axes_target)
-    plt.show(actors + [axes_actor], viewup="z").close()
+    plt.show(actors, viewup="z").close()
 
 
 def visualize_k_hop_plane(
@@ -587,12 +579,4 @@ def visualize_k_hop_plane(
 
     # 4) Show plot
     plt = vedo.Plotter(bg="white", title=title)
-    _axes_target = mesh
-    try:
-        axes_actor = vedo.Axes(_axes_target, axesType=4, xyGrid=True)
-    except TypeError:
-        try:
-            axes_actor = vedo.Axes(_axes_target, xyGrid=True)
-        except TypeError:
-            axes_actor = vedo.Axes(_axes_target)
-    plt.show(actors + [axes_actor], viewup="z").close()
+    plt.show(actors, viewup="z").close()
