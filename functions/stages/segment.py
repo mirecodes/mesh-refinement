@@ -20,9 +20,9 @@ from functions.lib.visualization import recolor_parts, select_parts_interactive,
 @dataclass
 class SegmentConfig:
     neighbor_threshold: float = 0.25
-    allow_single_loop_rlp: bool = False
-    min_size_to_keep: int = 2
-    show_none_loops: bool = True
+    allow_single_loop_rlp: bool = True
+    min_size_to_keep: int = 0
+    show_none_loops: bool = False
 
 
 # =============================================================================
@@ -65,18 +65,12 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
     print(f"[info] Preparing vectors for {len(rlps)} RLPs...")
     for rlp in rlps:
         center = rlp['center']
+        # Use the RLP normal computed in cluster_reciprocal_loop_pairs directly
+        n_plane = np.asarray(rlp["normal"], dtype=float)
+        
         A = rlp['a']['linear']; B = rlp['b']['linear']
-        if A.get('plane') and len(A['plane']) > 0 and B.get('plane') and len(B['plane']) > 0:
-            nA = np.asarray(A['plane'][0][0], dtype=float)
-            nB = np.asarray(B['plane'][0][0], dtype=float)
-            dA = float(A['plane'][0][1]); dB = float(B['plane'][0][1])
-        else:
-            nA = np.asarray(A.get('pca_normal', [0, 0, 1]), dtype=float)
-            nB = np.asarray(B.get('pca_normal', [0, 0, 1]), dtype=float)
-            dA = dB = 0.0
-        if float(np.dot(nA, nB)) < 0.0:
-            nB = -nB
-        n_plane = normalize(np.mean(np.vstack([nA, nB]), axis=0))
+        dA = float(A['plane'][0][1]) if A.get('plane') and len(A['plane']) > 0 else 0.0
+        dB = float(B['plane'][0][1]) if B.get('plane') and len(B['plane']) > 0 else 0.0
         d_plane = 0.5 * (dA + dB)
         
         # 1. Add the main linear normal vector candidate (as list)
@@ -229,10 +223,19 @@ def append_single_loop_rlps(results_list: List[dict], rlps: List[dict], verts: n
                 else:
                     center = np.zeros(3)
                 
+                lin = single.get("linear", {})
+                if lin and lin.get("plane") and len(lin["plane"]) > 0:
+                    n_val = normalize(np.asarray(lin["plane"][0][0], dtype=float))
+                else:
+                    n_val = normalize(np.asarray(single["pca_normal"], dtype=float))
+                
                 rlp = {
+                    'parts': key,
                     'a': single,
                     'b': single,  # 다운스트림 처리에서 에러 방지를 위해 b에도 동일하게 할당
                     'center': center.tolist(),
+                    'normal': n_val.tolist(),
+                    'cost': 0.0,
                     'parent': single.get('parent', -1),
                     'child': single.get('child', -1),
                     'is_single': True
@@ -261,7 +264,12 @@ def build_link_map(rlps: List[dict]) -> Dict[Tuple[int, int], List[int]]:
 
 
 def pick_normal_from_rlp(rlp: dict) -> np.ndarray | None:
-    """Try linear plane normal, then PCA normal."""
+    """Try RLP normal first, then fallback to single loop plane/PCA normal."""
+    if "normal" in rlp:
+        n = np.asarray(rlp["normal"], dtype=float)
+        if np.isfinite(n).all() and np.linalg.norm(n) > 1e-12:
+            return normalize(n)
+            
     plane = rlp.get("linear", {}).get("plane", None)
     if plane and len(plane) >= 1 and len(plane[0]) >= 1:
         n = np.asarray(plane[0][0], dtype=float)
@@ -388,7 +396,7 @@ def stage_segment(cfgs):
         print("=" * 60)
 
     print("[info] Starting interactive part selection...")
-    categories, belongings, rand_colors = select_parts_interactive(parts, verts, faces, categories_num, display=cfgs.debug_mode)
+    categories, belongings, rand_colors = select_parts_interactive(parts, verts, faces, categories_num, display=True)
     print("[info] Part selection finished.")
     
     # --- Compact categories by removing empty ones (keeping index 0) ---
@@ -469,7 +477,7 @@ def stage_segment(cfgs):
         print("=" * 60)
 
     print("[info] Starting interactive vector selection...")
-    visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces, display=cfgs.debug_mode)
+    visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces, display=True)
     print("[info] Vector selection finished.")
 
     # save per-link meshes

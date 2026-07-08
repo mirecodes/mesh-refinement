@@ -6,3 +6,5 @@ from .stages.decompose import stage_decompose
 from .stages.segment import stage_segment
 from .stages.articulate import stage_articulate
 from .stages.bind import stage_bind
+
+total_gui_time = 0.0

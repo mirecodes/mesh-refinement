@@ -253,7 +253,7 @@ class TransformConfig:
     """
     Configuration for the transform stage.
     """
-    use_auto_alignment: bool = True  # If True, attempts to align mesh using PCA/RANSAC (z-up).
+    use_auto_alignment: bool = False  # If True, attempts to align mesh using PCA/RANSAC (z-up).
                                      # If False, uses the original coordinate system (Identity).
     gaussian_scale: float = 100.0      # Scale factor for Gaussian positions (e.g. 100.0 for m->cm conversion)
 
@@ -345,7 +345,11 @@ def stage_transform(cfgs, transform_config: TransformConfig = None):
     print("    Q / Esc : Finish and Save")
     print("=" * 60)
 
+    import time
+    import functions
+    gui_start = time.time()
     plt.show(interactive=True)
+    functions.total_gui_time += time.time() - gui_start
 
     # accumulate transforms: project each to pure rotation before composing
     fine_transform = getattr(assembly, "transform", None)

@@ -26,19 +26,19 @@ class SystemConfigs():
     json_config_path = os.path.join(os.path.dirname(__file__), "configs.json")
 
     # Operational controller
-    enable_stage_align: bool = False
+    enable_stage_align: bool = True
     restore_align: bool = False
-    enable_stage_refine: bool = False
-    enable_stage_decompose: bool = False
+    enable_stage_refine: bool = True
+    enable_stage_decompose: bool = True
     enable_stage_segment: bool = True
     enable_stage_articulate: bool = True
     enable_stage_bind: bool = True
-    debug_mode: bool = True
+    debug_mode: bool = False
     
     # URDF Generation Option
     # If True, the URDF will be generated in the original coordinate system (before transform).
     # If False, it will be in the transformed coordinate system.
-    urdf_use_original_coordinates: bool = False
+    urdf_use_original_coordinates: bool = True
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
@@ -107,36 +107,74 @@ class SystemConfigs():
                 print(f"[error]: Failed to create directory {path}: {e}")
 
 
+import time
+
+
 def execute_pipeline(cfgs: SystemConfigs):
     print("[info]: Execute the object importing pipeline")
+    
+    import functions
+    functions.total_gui_time = 0.0
+
+    stages_time = {}
+    pipeline_start = time.time()
 
     if cfgs.enable_stage_align:
+        start_time = time.time()
         if cfgs.restore_align:
             restore_transform(cfgs)
             print("[info]: Restoring the alignment")
+            stages_time["Alignment/Restore"] = time.time() - start_time
         else:
             stage_transform(cfgs)
             print("[info]: Running the alignment stage")
+            stages_time["Alignment"] = time.time() - start_time
 
     if cfgs.enable_stage_refine:
         print("[info]: Running the refinement stage")
+        start_time = time.time()
         stage_refine(cfgs, debug_mode=cfgs.debug_mode)
+        stages_time["Refinement"] = time.time() - start_time
 
     if cfgs.enable_stage_decompose:
         print("[info]: Running the decomposition stage")
+        start_time = time.time()
         stage_decompose(cfgs)
+        stages_time["Decomposition"] = time.time() - start_time
 
     if cfgs.enable_stage_segment:
         print("[info]: Running the segmentation stage")
+        start_time = time.time()
         stage_segment(cfgs)
+        stages_time["Segmentation"] = time.time() - start_time
 
     if cfgs.enable_stage_articulate:
         print("[info]: Running the articulation stage")
+        start_time = time.time()
         stage_articulate(cfgs)
+        stages_time["Articulation"] = time.time() - start_time
 
     if cfgs.enable_stage_bind:
         print("[info]: Running the binding stage")
+        start_time = time.time()
         stage_bind(cfgs)
+        stages_time["Binding"] = time.time() - start_time
+
+    total_time = time.time() - pipeline_start
+    gui_time = functions.total_gui_time
+    processing_time = max(0.0, total_time - gui_time)
+
+    print("\n" + "=" * 40)
+    print(f"{'Pipeline Execution Summary':^40}")
+    print("=" * 40)
+    for stage_name, duration in stages_time.items():
+        print(f"- {stage_name} stage: {duration:.2f}s")
+    print("-" * 40)
+    print(f"- Time spent in User GUI: {gui_time:.2f}s")
+    print(f"- Time spent in Processing (Waiting): {processing_time:.2f}s")
+    print("-" * 40)
+    print(f"Total elapsed time: {total_time:.2f}s")
+    print("=" * 40 + "\n")
 
 
 

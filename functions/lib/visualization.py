@@ -118,7 +118,11 @@ def select_parts_interactive(parts: List[trimesh.Trimesh], verts: np.ndarray, fa
     plt.add_callback("RightButtonPress", partial(on_right_click, vmeshes=vmeshes, belongings=belongings, prevs=prevs, shared=shared, rand_colors=rand_colors, plt=plt))
     plt.add_callback("KeyPress",        partial(on_key,        vmeshes=vmeshes, belongings=belongings, prevs=prevs, shared=shared, rand_colors=rand_colors, categories_num=categories_num, plt=plt))
     recolor_parts(vmeshes, belongings, 0, rand_colors)
+    import time
+    import functions
+    gui_start = time.time()
     plt.show(vmeshes, interactive=True)
+    functions.total_gui_time += time.time() - gui_start
     
     categories = [[] for _ in range(categories_num + 1)]
     for i in range(1, len(belongings)):
@@ -371,7 +375,11 @@ def visualize_and_select_vectors_for_rlps(rlps: List[dict],
         plt_rlp.add_callback("KeyPress",  key_cb)
         plt_rlp.add_callback("CharEvent", key_cb)
 
+        import time
+        import functions
+        gui_start = time.time()
         plt_rlp.show([mesh_actor, *part_actors, *vec_actors], interactive=True).close()
+        functions.total_gui_time += time.time() - gui_start
 
 
 # =============================================================================
@@ -784,7 +792,7 @@ def visualize_all_boundary_loops(
             continue
 
         color_rgb = pastel_rgbs[i % len(pastel_rgbs)]
-        color_vedo = tuple(c / 255.0 for c in color_rgb)
+        color_vedo = '#%02x%02x%02x' % color_rgb
         loop_idx = np.asarray(loop, dtype=int)
         
         # Display loop vertices as dots
