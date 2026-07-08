@@ -38,7 +38,7 @@ class SystemConfigs():
     # URDF Generation Option
     # If True, the URDF will be generated in the original coordinate system (before transform).
     # If False, it will be in the transformed coordinate system.
-    urdf_use_original_coordinates: bool = True
+    urdf_use_original_coordinates: bool = False
 
     # --------------------------------------------------------------------------
     # Automatically Generated Configurations
