@@ -11,7 +11,7 @@ import vedo
 from json_handler import JsonHandler
 from functions.estimate import learn_separator_main, _trimesh_list_to_vedo_mesh
 from functions.graphs import cluster_reciprocal_loop_pairs, classify_vertices, build_adjacency_graph
-from functions.lib.visualization import PASTEL_RGB_FLOAT
+from functions.lib.visualization import PASTEL_RGB_FLOAT, visualize_and_select_vectors_for_rlps, visualize_rlp_clustering
 
 
 # =============================================================================
@@ -862,91 +862,7 @@ def on_rlp_key(event, *,
         plt.render()
 
 
-def visualize_and_select_vectors_for_rlps(rlps: List[dict],
-                                          parts: List[trimesh.Trimesh],
-                                          categories: List[List[trimesh.Trimesh]],
-                                          verts: np.ndarray,
-                                          faces: np.ndarray) -> None:
-    """
-    One window per RLP:
-      - show base mesh + the two parts
-      - draw all vectors (Tube)
-      - click to toggle type
-      - keyboard to move/rotate all vectors of THIS RLP
-    """
-    scene_diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
-    seg_len = scene_diag * 0.2 if np.isfinite(scene_diag) and scene_diag > 0 else 1.0
-    trans_step = scene_diag * 0.02 if np.isfinite(scene_diag) and scene_diag > 0 else 1.0
-    radius = seg_len * 0.02
 
-    for i, rlp in enumerate(rlps):
-        mesh_actor = vedo.Mesh([verts, faces]).c("white").alpha(0.35)
-        if hasattr(mesh_actor, "pickable"):
-            mesh_actor.pickable(False)
-
-        p_idx = int(rlp["a"]["parent"])
-        q_idx = int(rlp["a"]["child"])
-        part_ids = [pid for pid in (p_idx, q_idx) if pid != 0 and 1 <= pid <= len(parts)]
-        part_ids = list(dict.fromkeys(part_ids))
-
-        part_colors = [(0.85, 0.2, 0.2), (0.2, 0.4, 0.85)]
-        part_actors = []
-        for j, pid in enumerate(part_ids):
-            for tri in categories[pid]:
-                actor = vedo.Mesh([tri.vertices, tri.faces]).c(part_colors[min(j, 1)]).alpha(0.25)
-                if hasattr(actor, "pickable"):
-                    actor.pickable(False)
-                part_actors.append(actor)
-
-        # vector actors
-        vecs = rlp.get('vectors', []) or []
-        vec_actors = []
-        idx2actor = {}   # vi -> actor
-        valid_indices = []
-
-        for vi, v in enumerate(vecs):
-            c = np.asarray(v.get("center", rlp.get("center", [0, 0, 0])), dtype=float)
-            n = normalize(np.asarray(v.get("n"), dtype=float))
-            if not np.isfinite(n).all() or np.linalg.norm(n) < 1e-12:
-                continue
-            p0, p1 = c, c + seg_len * n
-            a = vedo.Tube([p0, p1], r=radius, cap=True).c("gray").alpha(1.0).lighting('off')
-            st = v.get("state", "None")
-            setattr(a, "vec_state", st)
-            setattr(a, "vec_idx", vi)
-            vec_actors.append(a)
-            idx2actor[vi] = a
-            valid_indices.append(vi)
-
-        plt_rlp = vedo.Plotter(title=f"RLP #{i}: parts {p_idx} ↔ {q_idx}", axes=1)
-
-        # Disable default VTK keybindings
-        iren = plt_rlp.interactor
-        for _ev in ("KeyPressEvent", "KeyReleaseEvent", "CharEvent"):
-            iren.RemoveObservers(_ev)
-
-        # mouse: toggle
-        plt_rlp.add_callback(
-            "LeftButtonPress",
-            partial(on_vector_click, vec_actors=vec_actors, rlp=rlp, click_counter={'count': 0})
-        )
-        # keyboard: move/rotate
-        key_cb = partial(
-            on_rlp_key,
-            plt=plt_rlp,
-            rlp=rlp,
-            vec_indices=valid_indices,
-            idx2actor=idx2actor,
-            vec_actors=vec_actors,
-            seg_len=seg_len,
-            radius=radius,
-            angle_step_deg=3.0,
-            trans_step=trans_step
-        )
-        plt_rlp.add_callback("KeyPress",  key_cb)
-        plt_rlp.add_callback("CharEvent", key_cb)
-
-        plt_rlp.show([mesh_actor, *part_actors, *vec_actors], interactive=True).close()
 
 
 # =============================================================================
@@ -1024,32 +940,33 @@ def _augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
 
     if len(group_indices) == 2:
         c1, c2 = centers[0], centers[1]
-        n1 = normals[0] if normals[0] is not None else normalize(c2 - c1)
-        n2 = normals[1] if normals[1] is not None else normalize(c1 - c2)
-        q1, q2, dist = _closest_points_between_lines(c1, n1, c2, n2)
-        if dist < 1e-6:
-            start = q1
-            dirv = normalize(c2 - c1) if np.linalg.norm(c2 - c1) > 1e-12 else normalize((n1 or 0)+(n2 or 0))
+        start = 0.5 * (c1 + c2)
+        diff = c2 - c1
+        if np.linalg.norm(diff) > 1e-6:
+            dirv = normalize(diff)
         else:
-            start = 0.5 * (q1 + q2)
-            seg   = q2 - q1
-            dirv  = normalize(seg) if np.linalg.norm(seg) > 1e-12 else normalize(c2 - c1)
+            n1 = normals[0] if normals[0] is not None else np.array([0.0, 0.0, 1.0])
+            n2 = normals[1] if normals[1] is not None else np.array([0.0, 0.0, 1.0])
+            if np.dot(n1, n2) < 0:
+                n2 = -n2
+            dirv = normalize(n1 + n2)
         vec = {"center": start.astype(float).tolist(), "n": dirv.astype(float).tolist(),
-               "state": "None", "source": "pair2"}
-        for i in group_indices:
-            rlps[i].setdefault("vectors", [])
-            rlps[i]["vectors"].append(dict(vec))
+               "state": "None", "source": "pair2", "type": "intersection"}
+        first_rlp = rlps[group_indices[0]]
+        first_rlp.setdefault("vectors", [])
+        first_rlp["vectors"].append(dict(vec))
         return
 
-    w = np.asarray(weights, dtype=float); W = float(w.sum())
+    # 3 or more RLPs
     C = np.vstack(centers)
-    start = (w[:, None] * C).sum(axis=0) / max(W, 1e-12)
+    start = C.mean(axis=0)
     Ns = [n for n in normals if n is not None]
     if Ns:
         N = np.vstack(Ns)
         ref = N[0]
         for k in range(len(N)):
-            if np.dot(N[k], ref) < 0: N[k] = -N[k]
+            if np.dot(N[k], ref) < 0:
+                N[k] = -N[k]
         navg = normalize(N.sum(axis=0))
     else:
         X = C - C.mean(axis=0)
@@ -1057,10 +974,10 @@ def _augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
         navg = normalize(Vt[0])
 
     vec = {"center": start.astype(float).tolist(), "n": navg.astype(float).tolist(),
-           "state": "None", "source": "pairN"}
-    for i in group_indices:
-        rlps[i].setdefault("vectors", [])
-        rlps[i]["vectors"].append(dict(vec))
+           "state": "None", "source": "pairN", "type": "intersection"}
+    first_rlp = rlps[group_indices[0]]
+    first_rlp.setdefault("vectors", [])
+    first_rlp["vectors"].append(dict(vec))
 
 
 def augment_vectors_for_pairs_with_map(rlps: List[dict], min_count: int = 2) -> None:

@@ -3,5 +3,9 @@
   "extension": "ply",
   "parts": {
     "num": 5      
+  },
+  "vector_scale": {
+    "length_factor": 0.5,
+    "thickness_factor": 0.5
   }
 }

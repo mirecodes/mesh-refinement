@@ -1,3 +1,5 @@
+import os
+import json
 import numpy as np
 import vedo
 import trimesh
@@ -41,14 +43,49 @@ PASTEL_RGB_UINT8 = np.array([
 PASTEL_RGB_FLOAT = (PASTEL_RGB_UINT8 / 255.0).tolist()
 
 
-def get_standard_arrow_params(verts: np.ndarray):
+def get_vector_scale_factors(length_factor: float | None = None, thickness_factor: float | None = None):
+    if length_factor is not None and thickness_factor is not None:
+        return float(length_factor), float(thickness_factor)
+
+    possible_paths = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "configs.json")),
+        os.path.abspath(os.path.join(os.getcwd(), "scripts", "configs.json")),
+        os.path.abspath(os.path.join(os.getcwd(), "configs.json")),
+    ]
+
+    try:
+        import glob
+        work_cfgs = glob.glob(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "work", "*", "attributes", "configs.json")))
+        possible_paths.extend(work_cfgs)
+    except Exception:
+        pass
+
+    for cfg_path in possible_paths:
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    vscale = data.get("vector_scale", {})
+                    if "length_factor" in vscale and "thickness_factor" in vscale:
+                        lf = float(vscale["length_factor"])
+                        tf = float(vscale["thickness_factor"])
+                        return lf, tf
+            except Exception:
+                continue
+
+    return 1.0, 1.0
+
+
+def get_standard_arrow_params(verts: np.ndarray, length_factor: float | None = None, thickness_factor: float | None = None):
     """
     Unified arrow size & thickness parameters across Plane estimation and RLP visualizations.
+    Dynamically scaled by vector_scale factors in configs.json.
     """
+    lf, tf = get_vector_scale_factors(length_factor, thickness_factor)
     scene_diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
-    arrow_len = scene_diag * 0.25 if np.isfinite(scene_diag) and scene_diag > 0 else 1.5
-    radius_arrow = arrow_len * 0.035
-    radius_sphere = arrow_len * 0.06
+    arrow_len = (scene_diag * 0.25 if np.isfinite(scene_diag) and scene_diag > 0 else 1.5) * lf
+    radius_arrow = (arrow_len * 0.035) * tf
+    radius_sphere = (arrow_len * 0.06) * tf
     shaft_rad = radius_arrow * 3.5
     head_rad = radius_arrow * 7.5
     head_len = arrow_len * 0.30
@@ -224,11 +261,11 @@ def rebuild_tube_actor(plt,
                         vi: int,
                         vec_actors: list,
                         idx2actor: dict):
-    """Recreate Tube (no arrow head, 2/3 thickness, gray/yellow/blue by state)."""
+    """Recreate Tube preserving exact seg_len and radius."""
     p0 = np.asarray(center, dtype=float) - (seg_len * 0.5) * normalize(np.asarray(n, dtype=float))
     p1 = np.asarray(center, dtype=float) + (seg_len * 0.5) * normalize(np.asarray(n, dtype=float))
     tube_color = "yellow" if state == "Revolute" else "blue" if state == "Prismatic" else "gray"
-    tube_r = radius * (2.0 / 3.0)
+    tube_r = radius
     new_actor = vedo.Tube([p0, p1], r=tube_r, cap=True).c(tube_color).lighting('off')
     new_actor.alpha(1.0 if state in ("Revolute", "Prismatic") else 0.85)
     setattr(new_actor, "vec_state", state)
@@ -356,11 +393,12 @@ def visualize_and_select_vectors_for_rlps(rlps: List[dict],
 
     from collections import defaultdict
 
+    lf, tf = get_vector_scale_factors()
     scene_diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
-    arrow_len, shaft_rad, head_rad, head_len, radius_sphere = get_standard_arrow_params(verts)
+    arrow_len, shaft_rad, head_rad, head_len, radius_sphere = get_standard_arrow_params(verts, length_factor=lf, thickness_factor=tf)
     seg_len = arrow_len
-    # Double tube thickness (diameter 2x larger than previous 0.0035)
-    tube_r = scene_diag * 0.007 if np.isfinite(scene_diag) and scene_diag > 0 else 0.010
+    # Tube thickness scaled by thickness_factor
+    tube_r = (scene_diag * 0.007 if np.isfinite(scene_diag) and scene_diag > 0 else 0.010) * tf
     radius = tube_r
     trans_step = scene_diag * 0.02 if np.isfinite(scene_diag) and scene_diag > 0 else 1.0
 

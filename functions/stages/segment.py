@@ -312,23 +312,26 @@ def augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
         else:
             n1 = normals[0] if normals[0] is not None else np.array([0.0, 0.0, 1.0])
             n2 = normals[1] if normals[1] is not None else np.array([0.0, 0.0, 1.0])
+            if np.dot(n1, n2) < 0:
+                n2 = -n2
             dirv = normalize(n1 + n2)
         vec = {"center": start.astype(float).tolist(), "n": dirv.astype(float).tolist(),
                "state": "None", "source": "pair2", "type": "intersection"}
-        for i in group_indices:
-            rlps[i].setdefault("vectors", [])
-            rlps[i]["vectors"].append(dict(vec))
+        first_rlp = rlps[group_indices[0]]
+        first_rlp.setdefault("vectors", [])
+        first_rlp["vectors"].append(dict(vec))
         return
 
-    w = np.asarray(weights, dtype=float); W = float(w.sum())
+    # 3 or more RLPs
     C = np.vstack(centers)
-    start = (w[:, None] * C).sum(axis=0) / max(W, 1e-12)
+    start = C.mean(axis=0)
     Ns = [n for n in normals if n is not None]
     if Ns:
         N = np.vstack(Ns)
         ref = N[0]
         for k in range(len(N)):
-            if np.dot(N[k], ref) < 0: N[k] = -N[k]
+            if np.dot(N[k], ref) < 0:
+                N[k] = -N[k]
         navg = normalize(N.sum(axis=0))
     else:
         X = C - C.mean(axis=0)
@@ -336,10 +339,10 @@ def augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
         navg = normalize(Vt[0])
 
     vec = {"center": start.astype(float).tolist(), "n": navg.astype(float).tolist(),
-           "state": "None", "source": "pairN"}
-    for i in group_indices:
-        rlps[i].setdefault("vectors", [])
-        rlps[i]["vectors"].append(dict(vec))
+           "state": "None", "source": "pairN", "type": "intersection"}
+    first_rlp = rlps[group_indices[0]]
+    first_rlp.setdefault("vectors", [])
+    first_rlp["vectors"].append(dict(vec))
 
 
 def augment_vectors_for_pairs_with_map(rlps: List[dict], min_count: int = 2) -> None:
