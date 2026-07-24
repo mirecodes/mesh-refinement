@@ -1,7 +1,7 @@
 {
-  "object_name": "box", 
+  "object_name": "proto_toolbox", 
   "extension": "ply",
   "parts": {
-    "num": 5           
+    "num": 5      
   }
 }

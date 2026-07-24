@@ -77,7 +77,8 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
         rlp['vectors'] = [{
             'center': center if isinstance(center, list) else center.tolist(),
             'n': n_plane.tolist(),
-            'd': d_plane.tolist() if isinstance(d_plane, np.ndarray) else d_plane
+            'd': d_plane.tolist() if isinstance(d_plane, np.ndarray) else d_plane,
+            'type': 'normal'
         }]
 
         # 2. Extract polyhedral cross products from BOTH directions
@@ -150,7 +151,8 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
             rlp['vectors'].append({
                 'center': center if isinstance(center, list) else center.tolist(),
                 'n': line.tolist(),
-                'd': [0.0, 0.0, 0.0]
+                'd': [0.0, 0.0, 0.0],
+                'type': 'intersection'
             })
             
             # Add 3rd vector (perpendicular to both main plane normal and the intersection line)
@@ -159,7 +161,8 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
                 rlp['vectors'].append({
                     'center': center if isinstance(center, list) else center.tolist(),
                     'n': normalize(n_third).tolist(),
-                    'd': [0.0, 0.0, 0.0]
+                    'd': [0.0, 0.0, 0.0],
+                    'type': 'cross'
                 })
                 
     print("[info] Vector preparation finished.")
@@ -302,18 +305,16 @@ def augment_for_group(rlps: List[dict], group_indices: List[int]) -> None:
 
     if len(group_indices) == 2:
         c1, c2 = centers[0], centers[1]
-        n1 = normals[0] if normals[0] is not None else normalize(c2 - c1)
-        n2 = normals[1] if normals[1] is not None else normalize(c1 - c2)
-        q1, q2, dist = closest_points_between_lines(c1, n1, c2, n2)
-        if dist < 1e-6:
-            start = q1
-            dirv = normalize(c2 - c1) if np.linalg.norm(c2 - c1) > 1e-12 else normalize((n1 or 0)+(n2 or 0))
+        start = 0.5 * (c1 + c2)
+        diff = c2 - c1
+        if np.linalg.norm(diff) > 1e-6:
+            dirv = normalize(diff)
         else:
-            start = 0.5 * (q1 + q2)
-            seg   = q2 - q1
-            dirv  = normalize(seg) if np.linalg.norm(seg) > 1e-12 else normalize(c2 - c1)
+            n1 = normals[0] if normals[0] is not None else np.array([0.0, 0.0, 1.0])
+            n2 = normals[1] if normals[1] is not None else np.array([0.0, 0.0, 1.0])
+            dirv = normalize(n1 + n2)
         vec = {"center": start.astype(float).tolist(), "n": dirv.astype(float).tolist(),
-               "state": "None", "source": "pair2"}
+               "state": "None", "source": "pair2", "type": "intersection"}
         for i in group_indices:
             rlps[i].setdefault("vectors", [])
             rlps[i]["vectors"].append(dict(vec))
@@ -477,7 +478,7 @@ def stage_segment(cfgs):
         print("=" * 60)
 
     print("[info] Starting interactive vector selection...")
-    visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces, display=True)
+    visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces, vert_label=vert_label, display=True)
     print("[info] Vector selection finished.")
 
     # save per-link meshes

@@ -11,6 +11,7 @@ import vedo
 from json_handler import JsonHandler
 from functions.estimate import learn_separator_main, _trimesh_list_to_vedo_mesh
 from functions.graphs import cluster_reciprocal_loop_pairs, classify_vertices, build_adjacency_graph
+from functions.lib.visualization import PASTEL_RGB_FLOAT
 
 
 # =============================================================================
@@ -602,7 +603,7 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
             nB = -nB
         n = normalize(np.mean(np.vstack([nA, nB]), axis=0))
         d = 0.5 * (dA + dB)
-        rlp['vectors'] = [{'center': center, 'n': n, 'd': d}]
+        rlp['vectors'] = [{'center': center, 'n': n, 'd': d, 'type': 'normal'}]
 
         A = rlp['a']['polyhedral']
         if A.get('plane') and len(A['plane']) > 0:
@@ -610,7 +611,7 @@ def prepare_vectors_for_rlps(rlps: List[dict]) -> None:
             for u in range(m):
                 for v in range(u + 1, m):
                     n = np.cross(planes[u][0], planes[v][0])
-                    rlp['vectors'].append({'center': center, 'n': n, 'd': np.zeros(3)})
+                    rlp['vectors'].append({'center': center, 'n': n, 'd': np.zeros(3), 'type': 'intersection'})
 
 
 def build_extrapoints_and_patches(results_list: List[dict],
@@ -1099,10 +1100,11 @@ def stage_segment(cfgs):
     # selection UI
     vmeshes, rand_colors = [], []
     base_actor = vedo.Mesh([verts, faces])
-    vmeshes.append(base_actor); rand_colors.append((255, 255, 255))
+    vmeshes.append(base_actor); rand_colors.append(PASTEL_RGB_FLOAT[-1])
     for i, part in enumerate(parts, start=1):
         actor = vedo.Mesh([part.vertices, part.faces])
-        color = np.random.rand(3); actor.c(color).alpha(0.5)
+        color = PASTEL_RGB_FLOAT[(i - 1) % len(PASTEL_RGB_FLOAT)]
+        actor.c(color).alpha(0.5)
         actor.idx_part = i
         vmeshes.append(actor); rand_colors.append(color)
 
@@ -1133,7 +1135,7 @@ def stage_segment(cfgs):
     augment_vectors_for_pairs_with_map(rlps, min_count=2)  # optional
 
     # vector selection UI (RLP-wise)
-    visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces)
+    visualize_and_select_vectors_for_rlps(rlps, parts, categories, verts, faces, vert_label=vert_label)
 
     # save per-link meshes
     seg_dir = os.path.join(os.path.dirname(cfgs.json_states_dir), "segment_mesh")

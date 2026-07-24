@@ -123,7 +123,7 @@ def debug_show_mesh(ms: pymeshlab.MeshSet, title: str):
             pass
 
         # Show the mesh
-        plt = vedo.Plotter(title=title, axes=1)
+        plt = vedo.Plotter(title=title, axes=1, size=(1800, 1200))
         plt.show(vedo_mesh, title).close()
 
     except Exception as e:

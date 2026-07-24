@@ -308,7 +308,7 @@ def stage_transform(cfgs, transform_config: TransformConfig = None):
         vedo.Line([0,0,0], [0,0,axis_len], c='blue', lw=3),
         vedo.Grid(pos=(0,0,0), s=(max_len*1.2, max_len*1.2), alpha=0.15)
     ]
-    plt = vedo.Plotter(title="Mesh Transform")
+    plt = vedo.Plotter(title="Mesh Transform", size=(1800, 1200))
 
     # disable default VTK keybindings
     try:

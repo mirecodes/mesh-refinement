@@ -26,14 +26,14 @@ class SystemConfigs():
     json_config_path = os.path.join(os.path.dirname(__file__), "configs.json")
 
     # Operational controller
-    enable_stage_align: bool = True
+    enable_stage_align: bool = False
     restore_align: bool = False
-    enable_stage_refine: bool = True
-    enable_stage_decompose: bool = True
+    enable_stage_refine: bool = False
+    enable_stage_decompose: bool = False
     enable_stage_segment: bool = True
     enable_stage_articulate: bool = True
     enable_stage_bind: bool = True
-    debug_mode: bool = False
+    debug_mode: bool = True
     
     # URDF Generation Option
     # If True, the URDF will be generated in the original coordinate system (before transform).
